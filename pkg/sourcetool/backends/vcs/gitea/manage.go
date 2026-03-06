@@ -245,8 +245,10 @@ func (b *Backend) CreateTagRuleset(r *models.Repository) error {
 		return err
 	}
 
-	// Try to create tag protection
-	_, _, err = client.CreateTagProtection(gc.owner, gc.repo, gitea.CreateTagProtectionOption{})
+	// Try to create tag protection for all tags
+	_, _, err = client.CreateTagProtection(gc.owner, gc.repo, gitea.CreateTagProtectionOption{
+		NamePattern: "*",
+	})
 	if err != nil {
 		return fmt.Errorf("enabling tag protection rules: %w", err)
 	}

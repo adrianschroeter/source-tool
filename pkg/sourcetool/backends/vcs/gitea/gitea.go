@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
+
+	"code.gitea.io/sdk/gitea"
 
 	"github.com/slsa-framework/source-tool/pkg/provenance"
 	"github.com/slsa-framework/source-tool/pkg/slsa"
@@ -147,29 +150,79 @@ func (b *Backend) getBranchControls(ctx context.Context, ghc *GiteaConnection, b
 
 	rule, _, err := client.GetBranchProtection(ghc.owner, ghc.repo, branchName)
 	if err != nil {
-		if isGitea404(err) {
-			return controls, nil
+		if !isGitea404(err) {
+			return nil, fmt.Errorf("getting branch protection: %w", err)
 		}
-		return nil, fmt.Errorf("getting branch protection: %w", err)
+		// No branch protection configured, but continue to check tag protections.
+	} else {
+		now := timestamppb.Now()
+
+		if rule.EnablePush {
+			controls.AddControl(&provenance.Control{
+				Name:  slsa.ContinuityEnforced.String(),
+				Since: now,
+			})
+		}
+
+		if rule.EnableApprovalsWhitelist || rule.BlockOnRejectedReviews {
+			controls.AddControl(&provenance.Control{
+				Name:  slsa.ReviewEnforced.String(),
+				Since: now,
+			})
+		}
 	}
 
-	now := timestamppb.Now()
-
-	if rule.EnablePush {
-		controls.AddControl(&provenance.Control{
-			Name:   slsa.ContinuityEnforced.String(),
-			Since:  now,
-		})
+	// Check tag protections for TAG_HYGIENE control.
+	tagHygieneControl, err := computeTagHygieneControl(client, ghc.owner, ghc.repo, branchName)
+	if err != nil {
+		return nil, fmt.Errorf("checking tag hygiene: %w", err)
 	}
-
-	if rule.EnableApprovalsWhitelist || rule.BlockOnRejectedReviews {
-		controls.AddControl(&provenance.Control{
-			Name:   slsa.ReviewEnforced.String(),
-			Since:  now,
-		})
+	if tagHygieneControl != nil {
+		controls.AddControl(tagHygieneControl)
 	}
 
 	return controls, nil
+}
+
+// computeTagHygieneControl checks if the Gitea repository has tag protection
+// rules that cover the specified branch. A tag protection is considered valid
+// if its NamePattern matches the branch name (using glob matching) or if it
+// covers all tags (NamePattern "*"). When multiple protections match, the
+// oldest one is used for the Since timestamp.
+func computeTagHygieneControl(client *gitea.Client, owner, repo, branchName string) (*provenance.Control, error) {
+	tagProtections, _, err := client.ListTagProtection(owner, repo, gitea.ListRepoTagProtectionsOptions{})
+	if err != nil {
+		// If the API is not available (older Gitea versions), treat as no tag hygiene.
+		if strings.Contains(strings.ToLower(err.Error()), "404") ||
+			strings.Contains(strings.ToLower(err.Error()), "not found") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing tag protections: %w", err)
+	}
+
+	// Find the oldest tag protection whose pattern matches the branch name.
+	var oldest *gitea.TagProtection
+	for _, tp := range tagProtections {
+		matched, err := path.Match(tp.NamePattern, branchName)
+		if err != nil {
+			// Invalid pattern, skip it.
+			continue
+		}
+		if matched {
+			if oldest == nil || tp.Created.Before(oldest.Created) {
+				oldest = tp
+			}
+		}
+	}
+
+	if oldest == nil {
+		return nil, nil
+	}
+
+	return &provenance.Control{
+		Name:  slsa.TagHygiene.String(),
+		Since: timestamppb.New(oldest.Created),
+	}, nil
 }
 
 func isGitea404(err error) bool {
