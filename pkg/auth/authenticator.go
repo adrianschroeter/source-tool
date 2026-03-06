@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"time"
 
+	"code.gitea.io/sdk/gitea"
 	"github.com/fatih/color"
 	"github.com/google/go-github/v69/github"
 	"github.com/hashicorp/go-retryablehttp"
@@ -24,14 +25,18 @@ const (
 	deviceCodeURL = "https://github.com/login/device/code"
 	tokenURL      = "https://github.com/login/oauth/access_token" //nolint:gosec // not a credential
 
+	// Gitea endpoints - configurable
+	GiteaTokenEnvVar = "GITEA_TOKEN"
+
 	// The SLSA sourcetool app OAuth client ID
 	oauthClientID = "Ov23lidVQsiU5R5tod3z"
 
 	// App's config directory name
 	configDirName = "slsa"
 
-	// Token filename
+	// Token filenames
 	githubTokenFileName = "sourcetool.github.token"
+	giteaTokenFileName  = "sourcetool.gitea.token"
 )
 
 var oauthScopes = []string{
@@ -171,5 +176,61 @@ func (a *Authenticator) WhoAmI() (*models.Actor, error) {
 
 	return &models.Actor{
 		Login: user.GetLogin(),
+	}, nil
+}
+
+// GiteaToken returns the Gitea token
+func (a *Authenticator) GiteaToken() (string, error) {
+	return a.impl.readTokenFromFile(giteaTokenFileName, GiteaTokenEnvVar)
+}
+
+// GetGiteaClient returns a Gitea client preconfigured with
+// the logged-in token.
+func (a *Authenticator) GetGiteaClient(baseURL string) (*gitea.Client, error) {
+	token, err := a.GiteaToken()
+	if err != nil {
+		return nil, fmt.Errorf("reading token: %w", err)
+	}
+
+	rClient := retryablehttp.NewClient()
+	rClient.RetryMax = 3
+	rClient.Logger = nil
+	httpClient := rClient.StandardClient()
+
+	client, err := gitea.NewClient(
+		baseURL,
+		gitea.SetToken(token),
+		gitea.SetHTTPClient(httpClient),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating Gitea client: %w", err)
+	}
+
+	return client, nil
+}
+
+// WhoAmIGitea returns the user authenticated with the Gitea token
+func (a *Authenticator) WhoAmIGitea(baseURL string) (*models.Actor, error) {
+	token, err := a.GiteaToken()
+	if err != nil {
+		return nil, fmt.Errorf("reading token: %w", err)
+	}
+
+	if token == "" {
+		return nil, nil
+	}
+
+	client, err := a.GetGiteaClient(baseURL)
+	if err != nil {
+		return nil, err
+	}
+
+	user, _, err := client.GetMyUserInfo()
+	if err != nil {
+		return nil, fmt.Errorf("fetching user data: %w", err)
+	}
+
+	return &models.Actor{
+		Login: user.UserName,
 	}, nil
 }

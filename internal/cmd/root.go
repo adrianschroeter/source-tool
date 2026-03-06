@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -14,7 +15,10 @@ import (
 	"github.com/slsa-framework/source-tool/pkg/auth"
 )
 
-var githubToken string
+var (
+	githubToken string
+	giteaURL    string
+)
 
 func getVerifier(vo *verifierOptions) attest.Verifier {
 	options := attest.DefaultVerifierOptions
@@ -43,6 +47,7 @@ controls and much more.
 	}
 
 	rootCmd.PersistentFlags().StringVar(&githubToken, "github_token", "", "the github token to use for auth")
+	rootCmd.PersistentFlags().StringVar(&giteaURL, "gitea_url", "", "Gitea instance URL (e.g., https://src.opensuse.org)")
 
 	// Define command groups for better organization
 	rootCmd.AddGroup(
@@ -98,11 +103,21 @@ func Execute() {
 
 func CheckAuth() (*auth.Authenticator, error) {
 	authenticator := auth.New()
+	
+	// First try GitHub auth
 	user, err := authenticator.WhoAmI()
-	if err != nil {
-		return nil, fmt.Errorf("checking authentication status: %w", err)
+	if err == nil && user != nil {
+		return authenticator, nil
 	}
-
+	
+	// If GitHub auth fails, try Gitea auth if GITEA_TOKEN is set
+	if os.Getenv("GITEA_TOKEN") != "" || tokenFileExists() {
+		// For Gitea, we just need to return an authenticator
+		// The Gitea backend will handle its own auth
+		return authenticator, nil
+	}
+	
+	// No auth available
 	if user == nil {
 		fmt.Println()
 		fmt.Println("🚫  " + w("sourcetool is not logged in"))
@@ -115,4 +130,13 @@ func CheckAuth() (*auth.Authenticator, error) {
 		return nil, errors.New("source tool is not logged in")
 	}
 	return authenticator, nil
+}
+
+func tokenFileExists() bool {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return false
+	}
+	_, err = os.ReadFile(filepath.Join(dir, "slsa", "sourcetool.gitea.token"))
+	return err == nil
 }

@@ -27,6 +27,7 @@ type authenticatorImplementation interface {
 	checkTokenStatus(context.Context, string) (string, error)
 	persistToken(token string) error
 	readToken() (string, error)
+	readTokenFromFile(filename string, envVar string) (string, error)
 }
 
 type defaultImplementation struct{}
@@ -182,6 +183,28 @@ func (di *defaultImplementation) readToken() (string, error) {
 		// If the token file is not found, try reading it from the environment
 		if errors.Is(err, os.ErrNotExist) {
 			return os.Getenv("GITHUB_TOKEN"), nil
+		}
+		return "", fmt.Errorf("reading token file: %w", err)
+	}
+
+	ret := strings.TrimSpace(string(data))
+	if ret == "" {
+		return "", fmt.Errorf("token file is empty")
+	}
+
+	return ret, nil
+}
+
+func (di *defaultImplementation) readTokenFromFile(filename string, envVar string) (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("getting user config dir: %w", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, configDirName, filename))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return os.Getenv(envVar), nil
 		}
 		return "", fmt.Errorf("reading token file: %w", err)
 	}

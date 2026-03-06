@@ -24,6 +24,7 @@ import (
 	ghbackend "github.com/slsa-framework/source-tool/pkg/sourcetool/backends/vcs/github"
 	"github.com/slsa-framework/source-tool/pkg/sourcetool/models"
 	"github.com/slsa-framework/source-tool/pkg/sourcetool/options"
+	giteabackend "github.com/slsa-framework/source-tool/pkg/sourcetool/backends/vcs/gitea"
 )
 
 // toolImplementation defines the mockable implementation of source tool
@@ -65,9 +66,18 @@ func (impl *defaultToolImplementation) GetAttestationReader(_ *models.Repository
 }
 
 // GetVcsBackend returns the VCS backend to handle the repository defined in the options
-func (impl *defaultToolImplementation) GetVcsBackend(*models.Repository) (models.VcsBackend, error) {
-	// for now we only support github, so there
-	return ghbackend.New(), nil
+func (impl *defaultToolImplementation) GetVcsBackend(repo *models.Repository) (models.VcsBackend, error) {
+	host := repo.Hostname
+	if host == "" {
+		host = "github.com"
+	}
+
+	// Use GitHub for github.com, otherwise use Gitea
+	if host == "github.com" {
+		return ghbackend.New(), nil
+	}
+
+	return giteabackend.New(), nil
 }
 
 // VerifyOptions checks options are in good shape to run
@@ -226,8 +236,15 @@ func (impl *defaultToolImplementation) SearchPullRequest(ctx context.Context, a 
 func (impl *defaultToolImplementation) GetPolicyStatus(
 	ctx context.Context, a *auth.Authenticator, opts *options.Options, r *models.Repository,
 ) (*slsa.ControlStatus, error) {
+	// Create policy evaluator with Gitea support if needed
+	pe := policy.NewPolicyEvaluator()
+	isGitea := r.Hostname != "" && r.Hostname != "github.com"
+	if isGitea {
+		pe.GiteaURL = fmt.Sprintf("https://%s", r.Hostname)
+	}
+
 	// First: Look for the policy. If found then we are done
-	pcy, _, err := policy.NewPolicyEvaluator().GetPolicy(ctx, r)
+	pcy, _, err := pe.GetPolicy(ctx, r)
 	if err != nil {
 		return nil, fmt.Errorf("checking if the repository has a policy %w", err)
 	}
@@ -243,6 +260,15 @@ func (impl *defaultToolImplementation) GetPolicyStatus(
 			Since:             &t,
 			Message:           fmt.Sprintf("A repository policy exists for %s", r.Path),
 			RecommendedAction: nil,
+		}, nil
+	}
+
+	// For Gitea repos, skip PR check since policy repo doesn't exist there
+	if isGitea {
+		return &slsa.ControlStatus{
+			Name:    slsa.PolicyAvailable,
+			State:   slsa.StateNotEnabled,
+			Message: "No policy found (policy repository not available on Gitea)",
 		}, nil
 	}
 

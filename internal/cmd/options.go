@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/carabiner-dev/vcslocator"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/slsa-framework/source-tool/pkg/auth"
 	"github.com/slsa-framework/source-tool/pkg/ghcontrol"
+	giteabackend "github.com/slsa-framework/source-tool/pkg/sourcetool/backends/vcs/gitea"
 	"github.com/slsa-framework/source-tool/pkg/sourcetool/models"
 )
 
@@ -55,8 +57,15 @@ func (ro *repoOptions) ParseSlug(lString string) error {
 }
 
 func (ro *repoOptions) GetRepository() *models.Repository {
+	hostname := "github.com"
+	if giteaURL != "" {
+		u, err := url.Parse(giteaURL)
+		if err == nil && u.Host != "" {
+			hostname = u.Host
+		}
+	}
 	return &models.Repository{
-		Hostname: "github.com",
+		Hostname: hostname,
 		Path:     fmt.Sprintf("%s/%s", ro.owner, ro.repository),
 	}
 }
@@ -81,10 +90,17 @@ func (bo *branchOptions) AddFlags(cmd *cobra.Command) {
 }
 
 func (bo *branchOptions) GetBranch() *models.Branch {
+	hostname := "github.com"
+	if giteaURL != "" {
+		u, err := url.Parse(giteaURL)
+		if err == nil && u.Host != "" {
+			hostname = u.Host
+		}
+	}
 	return &models.Branch{
 		Name: bo.branch,
 		Repository: &models.Repository{
-			Hostname: "github.com",
+			Hostname: hostname,
 			Path:     fmt.Sprintf("%s/%s", bo.owner, bo.repository),
 		},
 	}
@@ -123,6 +139,30 @@ func (bo *branchOptions) EnsureDefaults() error {
 		return nil
 	}
 
+	// Use Gitea backend if --gitea_url is set
+	if giteaURL != "" {
+		hostname := ""
+		u, err := url.Parse(giteaURL)
+		if err == nil && u.Host != "" {
+			hostname = u.Host
+		}
+		giteaConn, err := giteabackend.NewGiteaConnectionWithHost(bo.owner, bo.repository, "", hostname)
+		if err != nil {
+			return fmt.Errorf("creating Gitea connection: %w", err)
+		}
+		client, err := giteaConn.GetClient()
+		if err != nil {
+			return fmt.Errorf("getting Gitea client: %w", err)
+		}
+		repoInfo, _, err := client.GetRepo(bo.owner, bo.repository)
+		if err != nil {
+			return fmt.Errorf("reading repository default branch: %w", err)
+		}
+		bo.branch = repoInfo.DefaultBranch
+		return nil
+	}
+
+	// Use GitHub for github.com
 	t := githubToken
 	var err error
 	if t == "" {
@@ -191,6 +231,31 @@ func (co *commitOptions) EnsureDefaults() error {
 	}
 
 	if co.commit == "" {
+		// Use Gitea backend if --gitea_url is set
+		if giteaURL != "" {
+			hostname := ""
+			u, err := url.Parse(giteaURL)
+			if err == nil && u.Host != "" {
+				hostname = u.Host
+			}
+			giteaConn, err := giteabackend.NewGiteaConnectionWithHost(co.owner, co.repository, co.branch, hostname)
+			if err != nil {
+				return fmt.Errorf("creating Gitea connection: %w", err)
+			}
+			client, err := giteaConn.GetClient()
+			if err != nil {
+				return fmt.Errorf("getting Gitea client: %w", err)
+			}
+			// Get the latest commit SHA from the branch
+			branch, _, err := client.GetRepoBranch(co.owner, co.repository, co.branch)
+			if err != nil {
+				return fmt.Errorf("fetching last commit from %q: %w", co.branch, err)
+			}
+			co.commit = branch.Commit.ID
+			return nil
+		}
+
+		// Use GitHub for github.com
 		t := githubToken
 		var err error
 		if t == "" {
@@ -220,6 +285,14 @@ func (vo *verifierOptions) Validate() error {
 }
 
 func (vo *verifierOptions) AddFlags(cmd *cobra.Command) {
-	cmd.PersistentFlags().StringVar(&vo.expectedIssuer, "expected_issuer", "", "The expected issuer of the attestation signer certificate")
-	cmd.PersistentFlags().StringVar(&vo.expectedSan, "expected_san", "", "The expected SAN string in the attestation signer certificate")
+	cmd.PersistentFlags().StringVar(
+		&vo.expectedIssuer, "expected_issuer", "", "The expected issuer of the attestation signer certificate",
+	)
+	cmd.PersistentFlags().StringVar(
+		&vo.expectedSan, "expected_san", "", "The expected SAN string in the attestation signer certificate",
+	)
+}
+
+func (vo *verifierOptions) GetVerifier() {
+	// TODO
 }
