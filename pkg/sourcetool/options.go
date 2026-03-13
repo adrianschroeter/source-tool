@@ -48,3 +48,17 @@ func WithPolicyRepo(slug string) ConfigFn {
 		return nil
 	}
 }
+
+func WithPolicyHostname(hostname string) ConfigFn {
+	return func(t *Tool) error {
+		t.Options.PolicyHostname = hostname
+		return nil
+	}
+}
+
+func WithPolicyPathOwner(owner string) ConfigFn {
+	return func(t *Tool) error {
+		t.Options.PolicyPathOwner = owner
+		return nil
+	}
+}

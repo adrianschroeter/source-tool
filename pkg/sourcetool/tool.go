@@ -150,7 +150,7 @@ func (t *Tool) FindPolicyPR(ctx context.Context, repo *models.Repository) (*mode
 		Path:     fmt.Sprintf("%s/%s", policyRepoOwner, policyRepoRepo),
 	}, fmt.Sprintf("Add %s SLSA Source policy file", repo.Path))
 	if err != nil {
-		return nil, fmt.Errorf("searching for policy pull request: %w", err)
+		return nil, fmt.Errorf("FindPolicyPR searching for policy pull request: %w", err)
 	}
 
 	return pr, nil
@@ -236,6 +236,14 @@ func (t *Tool) createPolicy(r *models.Repository, branch *models.Branch, control
 // GetRepositoryPolicy retrieves the policy of repo from the community
 func (t *Tool) GetRepositoryPolicy(ctx context.Context, r *models.Repository) (*policy.RepoPolicy, error) {
 	pe := policy.NewPolicyEvaluator()
+	// Set Gitea URL if this is a Gitea repository
+	if r.Hostname != "" && r.Hostname != "github.com" {
+		pe.GiteaURL = fmt.Sprintf("https://%s", r.Hostname)
+	}
+	// Pass the policy repo and hostname from options
+	pe.PolicyRepo = t.Options.PolicyRepo
+	pe.PolicyHostname = t.Options.PolicyHostname
+	pe.PolicyPathOwner = t.Options.PolicyPathOwner
 	p, _, err := pe.GetPolicy(ctx, r)
 	if err != nil {
 		return nil, fmt.Errorf("getting repository policy: %w", err)

@@ -20,6 +20,14 @@ type Options struct {
 
 	// PolicyRepo is the repository where the policies are stored
 	PolicyRepo string
+
+	// PolicyHostname is the hostname to use in the policy path
+	// If not set, the repository's hostname will be used
+	PolicyHostname string
+
+	// PolicyPathOwner is the owner to use in the policy path
+	// If not set, the default (slsa-framework) will be used
+	PolicyPathOwner string
 }
 
 // DefaultOptions holds the default options the tool initializes with

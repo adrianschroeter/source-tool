@@ -26,6 +26,9 @@ var (
 // statusOptions
 type statusOptions struct {
 	commitOptions
+	policyRepo      string
+	policyHostname  string
+	policyPathOwner string
 }
 
 // Validate checks the options
@@ -39,6 +42,15 @@ func (so *statusOptions) Validate() error {
 // AddFlags adds the subcommands flags
 func (so *statusOptions) AddFlags(cmd *cobra.Command) {
 	so.commitOptions.AddFlags(cmd)
+	cmd.PersistentFlags().StringVar(
+		&so.policyRepo, "policy-repo", "", "policy repository (owner/repo format)",
+	)
+	cmd.PersistentFlags().StringVar(
+		&so.policyHostname, "policy-hostname", "", "hostname to use in policy path (e.g., opensuse.org)",
+	)
+	cmd.PersistentFlags().StringVar(
+		&so.policyPathOwner, "policy-path-owner", "", "owner to use in policy path (e.g., slsa-framework)",
+	)
 }
 
 // TODO(puerco): Most of the logic in this subcommand (except maybe the output)
@@ -82,6 +94,33 @@ sourcetool status myorg/myrepo@mybranch
 				return err
 			}
 
+			// If using Gitea, set default policy repo and hostname
+			if giteaURL != "" {
+				if opts.policyRepo == "" {
+					opts.policyRepo = "adrianSuSE/slsa"
+				}
+				if opts.policyHostname == "" {
+					// Extract hostname from gitea URL (e.g., src.opensuse.org -> opensuse.org)
+					hostname := giteaURL
+					if strings.HasPrefix(hostname, "https://") {
+						hostname = strings.TrimPrefix(hostname, "https://")
+					} else if strings.HasPrefix(hostname, "http://") {
+						hostname = strings.TrimPrefix(hostname, "http://")
+					}
+					// Remove port if present
+					if idx := strings.Index(hostname, ":"); idx != -1 {
+						hostname = hostname[:idx]
+					}
+					// Extract the main domain (e.g., src.opensuse.org -> opensuse.org)
+					parts := strings.Split(hostname, ".")
+					if len(parts) >= 2 {
+						opts.policyHostname = strings.Join(parts[len(parts)-2:], ".")
+					} else {
+						opts.policyHostname = hostname
+					}
+				}
+			}
+
 			if err := opts.EnsureDefaults(); err != nil {
 				return err
 			}
@@ -102,8 +141,15 @@ sourcetool status myorg/myrepo@mybranch
 			}
 
 			// Create a new sourcetool object
+			policyRepo := opts.policyRepo
+			if policyRepo == "" {
+				policyRepo = fmt.Sprintf("%s/%s", policy.SourcePolicyRepoOwner, policy.SourcePolicyRepo)
+			}
 			srctool, err := sourcetool.New(
 				sourcetool.WithAuthenticator(authenticator),
+				sourcetool.WithPolicyRepo(policyRepo),
+				sourcetool.WithPolicyHostname(opts.policyHostname),
+				sourcetool.WithPolicyPathOwner(opts.policyPathOwner),
 			)
 			if err != nil {
 				return err

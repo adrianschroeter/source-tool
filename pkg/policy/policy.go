@@ -18,9 +18,12 @@ import (
 	git "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/google/go-github/v69/github" // Use v69
+	"github.com/hashicorp/go-retryablehttp"
 	spb "github.com/in-toto/attestation/go/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"code.gitea.io/sdk/gitea"
 
 	"github.com/slsa-framework/source-tool/pkg/attest"
 	"github.com/slsa-framework/source-tool/pkg/auth"
@@ -57,12 +60,51 @@ func createDefaultBranchPolicy(branch *models.Branch) *ProtectedBranch {
 	}
 }
 
-func getPolicyPath(repo *models.Repository) string {
+func getPolicyPath(repo *models.Repository, policyRepoOwnerOrHostname ...string) string {
 	ownerName, repoName, err := repo.PathAsGitHubOwnerName()
 	if err != nil {
 		return ""
 	}
-	return fmt.Sprintf("policy/github.com/%s/%s/source-policy.json", ownerName, repoName)
+	// Use the repository's hostname instead of hardcoded "github.com"
+	// Can be overridden by the first optional argument
+	hostname := repo.Hostname
+	if hostname == "" {
+		hostname = "github.com"
+	}
+
+	// If first argument is provided, it could be either policyRepoOwner (for backward compatibility)
+	// or hostname (if there's a second argument)
+	// For new usage with both policy repo owner and hostname, use getPolicyPathWithAll
+
+	if len(policyRepoOwnerOrHostname) > 0 {
+		// Check if this looks like a hostname (contains dots) vs owner
+		// This is a heuristic - hostnames typically contain dots
+		if strings.Contains(policyRepoOwnerOrHostname[0], ".") {
+			// This is a hostname override
+			hostname = policyRepoOwnerOrHostname[0]
+			// If there's a second argument, it's the policy repo owner
+			if len(policyRepoOwnerOrHostname) > 1 {
+				return fmt.Sprintf("policy/%s/%s/%s/%s/source-policy.json", hostname, policyRepoOwnerOrHostname[1], ownerName, repoName)
+			}
+			return fmt.Sprintf("policy/%s/%s/%s/source-policy.json", hostname, ownerName, repoName)
+		}
+		// Otherwise it's the policy repo owner (backward compatible)
+		return fmt.Sprintf("policy/%s/%s/%s/%s/source-policy.json", hostname, policyRepoOwnerOrHostname[0], ownerName, repoName)
+	}
+	return fmt.Sprintf("policy/%s/%s/%s/source-policy.json", hostname, ownerName, repoName)
+}
+
+// getPolicyPathWithAll returns the policy path with all components specified
+// Parameters: hostname, policyRepoOwner (optional, can be empty), ownerName, repoName
+func getPolicyPathWithAll(hostname, policyRepoOwner, ownerName, repoName string) string {
+	if hostname == "" {
+		hostname = "github.com"
+	}
+	// If policyRepoOwner is provided and not empty, include it in the path
+	if policyRepoOwner != "" {
+		return fmt.Sprintf("policy/%s/%s/%s/%s/source-policy.json", hostname, policyRepoOwner, ownerName, repoName)
+	}
+	return fmt.Sprintf("policy/%s/%s/%s/source-policy.json", hostname, ownerName, repoName)
 }
 
 func getPolicyRepoPath(pathToClone string, repo *models.Repository) string {
@@ -79,16 +121,86 @@ func (pe *PolicyEvaluator) getGitHubClient() (*github.Client, error) {
 	return pe.authenticator.GetGitHubClient()
 }
 
-// getRemotePolicy fetches a policy using the GitHub API
+func (pe *PolicyEvaluator) getGiteaClient(baseURL string) (*gitea.Client, error) {
+	if pe.giteaClient != nil {
+		return pe.giteaClient, nil
+	}
+
+	// Try to get token from environment
+	token := os.Getenv("GITEA_TOKEN")
+	if token == "" && pe.authenticator != nil {
+		var err error
+		token, err = pe.authenticator.GiteaToken()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if token == "" {
+		return nil, errors.New("no Gitea token found - set GITEA_TOKEN environment variable")
+	}
+
+	rClient := retryablehttp.NewClient()
+	rClient.RetryMax = 3
+	rClient.Logger = nil
+	httpClient := rClient.StandardClient()
+
+	client, err := gitea.NewClient(
+		baseURL,
+		gitea.SetToken(token),
+		gitea.SetHTTPClient(httpClient),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating Gitea client: %w", err)
+	}
+
+	pe.giteaClient = client
+	return pe.giteaClient, nil
+}
+
+// getRemotePolicy fetches a policy using the GitHub or Gitea API
 // If we can't find a policy we return a nil policy.
 func (pe *PolicyEvaluator) getRemotePolicy(ctx context.Context, repo *models.Repository) (*RepoPolicy, string, error) {
-	path := getPolicyPath(repo)
+	// Check if this is a Gitea repository
+	if repo.Hostname != "" && repo.Hostname != "github.com" {
+		return pe.getRemotePolicyGitea(ctx, repo)
+	}
+
+	// Determine the policy repository to use
+	policyRepoOwner := SourcePolicyRepoOwner
+	policyRepoName := SourcePolicyRepo
+	if pe.PolicyRepo != "" {
+		owner, name, ok := strings.Cut(pe.PolicyRepo, "/")
+		if ok {
+			policyRepoOwner = owner
+			policyRepoName = name
+		}
+	}
+
+	// GitHub implementation - use PolicyHostname if set
+	ownerName, repoName, err := repo.PathAsGitHubOwnerName()
+	if err != nil {
+		return nil, "", err
+	}
+	policyHostname := pe.PolicyHostname
+	if policyHostname == "" {
+		policyHostname = repo.Hostname
+		if policyHostname == "" {
+			policyHostname = "github.com"
+		}
+	}
+	// Use PolicyPathOwner if set, otherwise use the policy repo owner
+	policyPathOwner := pe.PolicyPathOwner
+	if policyPathOwner == "" {
+		policyPathOwner = policyRepoOwner
+	}
+	path := getPolicyPathWithAll(policyHostname, policyPathOwner, ownerName, repoName)
 	client, err := pe.getGitHubClient()
 	if err != nil {
 		return nil, "", err
 	}
 
-	policyContents, _, resp, err := client.Repositories.GetContents(ctx, SourcePolicyRepoOwner, SourcePolicyRepo, path, nil)
+	policyContents, _, resp, err := client.Repositories.GetContents(ctx, policyRepoOwner, policyRepoName, path, nil)
 	if resp != nil && resp.StatusCode == http.StatusNotFound {
 		return nil, "", nil
 	}
@@ -110,6 +222,94 @@ func (pe *PolicyEvaluator) getRemotePolicy(ctx context.Context, repo *models.Rep
 		return nil, "", fmt.Errorf("unmarshaling policy code: %w", err)
 	}
 	return p, *policyContents.HTMLURL, nil
+}
+
+// getRemotePolicyGitea fetches a policy from a Gitea instance
+func (pe *PolicyEvaluator) getRemotePolicyGitea(ctx context.Context, repo *models.Repository) (*RepoPolicy, string, error) {
+	// Get Gitea client - use configured URL or derive from repo hostname
+	giteaURL := pe.GiteaURL
+	if giteaURL == "" {
+		giteaURL = fmt.Sprintf("https://%s", repo.Hostname)
+	}
+
+	client, err := pe.getGiteaClient(giteaURL)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Determine the policy repository to use FIRST
+	policyRepoOwner := SourcePolicyRepoOwner
+	policyRepoName := SourcePolicyRepo
+	if pe.PolicyRepo != "" {
+		owner, name, ok := strings.Cut(pe.PolicyRepo, "/")
+		if ok {
+			policyRepoOwner = owner
+			policyRepoName = name
+		}
+	}
+
+	// Determine the hostname to use in the policy path
+	// Use PolicyHostname if set, otherwise use repo.Hostname
+	policyHostname := pe.PolicyHostname
+	// Determine the path owner to use
+	// Use PolicyPathOwner if set, otherwise use default
+	policyPathOwner := pe.PolicyPathOwner
+
+	// Use the new function with all parameters
+	ownerName, repoName, err := repo.PathAsGitHubOwnerName()
+	if err != nil {
+		return nil, "", err
+	}
+	if policyHostname == "" {
+		policyHostname = repo.Hostname
+		if policyHostname == "" {
+			policyHostname = "github.com"
+		}
+	}
+	path := getPolicyPathWithAll(policyHostname, policyPathOwner, ownerName, repoName)
+
+	// Try to get the file from the policy repository
+	// Note: This assumes the policy repo is also on the same Gitea instance
+	_, _, err = client.GetRepo(policyRepoOwner, policyRepoName)
+	if err != nil {
+		// Policy repository doesn't exist on this Gitea instance
+		// Return nil policy (not enabled)
+		return nil, "", nil
+	}
+
+	policyContents, _, err := client.GetFile(policyRepoOwner, policyRepoName, "main", path)
+	if err != nil {
+		// Check if it's a 404
+		if isGitea404(err) {
+			return nil, "", nil
+		}
+		return nil, "", fmt.Errorf("fetching policy from Gitea: %w", err)
+	}
+
+	// Gitea returns content as []byte directly
+	content := string(policyContents)
+
+	p := &RepoPolicy{}
+	err = protojson.UnmarshalOptions{
+		DiscardUnknown: false,
+	}.Unmarshal([]byte(content), p)
+	if err != nil {
+		return nil, "", fmt.Errorf("unmarshaling policy code: %w", err)
+	}
+
+	policyURL := fmt.Sprintf("%s/%s/%s/blob/main/%s", giteaURL, policyRepoOwner, policyRepoName, path)
+
+	// Log that we found and downloaded the policy
+	fmt.Printf("Downloaded policy from %s/%s\n", policyRepoOwner, policyRepoName)
+
+	return p, policyURL, nil
+}
+
+func isGitea404(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "404") || strings.Contains(strings.ToLower(err.Error()), "not found")
 }
 
 func getLocalPolicy(path string) (*RepoPolicy, string, error) {
@@ -512,6 +712,16 @@ type PolicyEvaluator struct {
 	authenticator *auth.Authenticator
 	reader        models.AttestationStorageReader
 	client        *github.Client
+	giteaClient   *gitea.Client
+	GiteaURL      string // Gitea instance URL for policy lookup
+	// PolicyRepo is the repository where policies are stored (owner/repo format)
+	PolicyRepo string
+	// PolicyHostname is the hostname to use in the policy path
+	// If not set, the repository's hostname will be used
+	PolicyHostname string
+	// PolicyPathOwner is the owner to use in the policy path
+	// If not set, the default (slsa-framework) will be used
+	PolicyPathOwner string
 }
 
 func NewPolicyEvaluator() *PolicyEvaluator {

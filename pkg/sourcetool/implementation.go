@@ -21,10 +21,10 @@ import (
 	roptions "github.com/slsa-framework/source-tool/pkg/repo/options"
 	"github.com/slsa-framework/source-tool/pkg/slsa"
 	"github.com/slsa-framework/source-tool/pkg/sourcetool/backends/attestation/notes"
+	giteabackend "github.com/slsa-framework/source-tool/pkg/sourcetool/backends/vcs/gitea"
 	ghbackend "github.com/slsa-framework/source-tool/pkg/sourcetool/backends/vcs/github"
 	"github.com/slsa-framework/source-tool/pkg/sourcetool/models"
 	"github.com/slsa-framework/source-tool/pkg/sourcetool/options"
-	giteabackend "github.com/slsa-framework/source-tool/pkg/sourcetool/backends/vcs/gitea"
 )
 
 // toolImplementation defines the mockable implementation of source tool
@@ -128,6 +128,7 @@ func (impl *defaultToolImplementation) CreatePolicyPR(a *auth.Authenticator, opt
 	// Define the policy repo...
 	policyRepoOwner := policy.SourcePolicyRepoOwner
 	policyRepoName := policy.SourcePolicyRepo
+	policyRepoHostname := "github.com"
 	// ... but honor if there is one in the options
 	if opts.PolicyRepo != "" {
 		var ok bool
@@ -135,10 +136,18 @@ func (impl *defaultToolImplementation) CreatePolicyPR(a *auth.Authenticator, opt
 		if !ok {
 			return nil, fmt.Errorf("invalid policy repository")
 		}
+		// Extract hostname if present in the policy repo (e.g., "gitea.example.com/owner/repo")
+		if strings.Contains(policyRepoOwner, "/") {
+			parts := strings.Split(policyRepoOwner, "/")
+			if len(parts) >= 2 {
+				policyRepoHostname = parts[0]
+				policyRepoOwner = strings.Join(parts[1:], "/")
+			}
+		}
 	}
 
 	policyRepo := &models.Repository{
-		Hostname:      "github.com",
+		Hostname:      policyRepoHostname,
 		Path:          fmt.Sprintf("%s/%s", policyRepoOwner, policyRepoName),
 		DefaultBranch: "main",
 	}
@@ -148,7 +157,7 @@ func (impl *defaultToolImplementation) CreatePolicyPR(a *auth.Authenticator, opt
 		policyRepo,
 		&roptions.PullRequestFileListOptions{
 			Title: fmt.Sprintf("Add %s/%s SLSA Source policy file", repoOwner, repoName),
-			Body:  fmt.Sprintf(`This pull request adds the SLSA source policy for github.com/%s/%s`, repoOwner, repoName),
+			Body:  fmt.Sprintf(`This pull request adds the SLSA source policy for %s/%s/%s`, policyRepoHostname, repoOwner, repoName),
 			CommitOptions: roptions.CommitOptions{
 				Name:  user.GetLogin(),
 				Email: user.GetLogin() + "@users.noreply.github.com",
@@ -156,7 +165,7 @@ func (impl *defaultToolImplementation) CreatePolicyPR(a *auth.Authenticator, opt
 		},
 		[]*repo.PullRequestFileEntry{
 			{
-				Path:   fmt.Sprintf("policy/github.com/%s/%s/source-policy.json", repoOwner, repoName),
+				Path:   fmt.Sprintf("policy/%s/%s/%s/source-policy.json", policyRepoHostname, repoOwner, repoName),
 				Reader: bytes.NewReader(policyJson),
 			},
 		},
@@ -242,11 +251,16 @@ func (impl *defaultToolImplementation) GetPolicyStatus(
 	if isGitea {
 		pe.GiteaURL = fmt.Sprintf("https://%s", r.Hostname)
 	}
+	// Pass the policy repo to the evaluator
+
+	pe.PolicyRepo = opts.PolicyRepo
+	pe.PolicyHostname = opts.PolicyHostname
+	pe.PolicyPathOwner = opts.PolicyPathOwner
 
 	// First: Look for the policy. If found then we are done
 	pcy, _, err := pe.GetPolicy(ctx, r)
 	if err != nil {
-		return nil, fmt.Errorf("checking if the repository has a policy %w", err)
+		return nil, fmt.Errorf("checking if the repository has a policy %w in %s", err, pe.PolicyRepo)
 	}
 
 	if pcy != nil {
@@ -263,15 +277,6 @@ func (impl *defaultToolImplementation) GetPolicyStatus(
 		}, nil
 	}
 
-	// For Gitea repos, skip PR check since policy repo doesn't exist there
-	if isGitea {
-		return &slsa.ControlStatus{
-			Name:    slsa.PolicyAvailable,
-			State:   slsa.StateNotEnabled,
-			Message: "No policy found (policy repository not available on Gitea)",
-		}, nil
-	}
-
 	// If there is no policy, check if we have a pull request open
 	policyRepoOwner := policy.SourcePolicyRepoOwner
 	policyRepoRepo := policy.SourcePolicyRepo
@@ -279,6 +284,15 @@ func (impl *defaultToolImplementation) GetPolicyStatus(
 	if ok {
 		policyRepoOwner = po
 		policyRepoRepo = pr
+	}
+
+	// For Gitea repos, skip PR check since policy repo doesn't exist there
+	if isGitea {
+		return &slsa.ControlStatus{
+			Name:    slsa.PolicyAvailable,
+			State:   slsa.StateNotEnabled,
+			Message: "No policy found (policy repository not available on Gitea)",
+		}, nil
 	}
 
 	host := r.Hostname
@@ -290,7 +304,7 @@ func (impl *defaultToolImplementation) GetPolicyStatus(
 		Path:     fmt.Sprintf("%s/%s", policyRepoOwner, policyRepoRepo),
 	}, fmt.Sprintf("Add %s SLSA Source policy file", r.Path))
 	if err != nil {
-		return nil, fmt.Errorf("searching for policy pull request: %w", err)
+		return nil, fmt.Errorf("GetPolicyStatus searching for policy pull request: %w", err)
 	}
 
 	// No pull request found. Not implemented
