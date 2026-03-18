@@ -131,11 +131,8 @@ func createTempPolicyFile(t *testing.T, policyData interface{}) string {
 func validateMockServerRequestPath(t *testing.T, r *http.Request, expectedPolicyOwner, expectedPolicyRepo, expectedPolicyBranch string) {
 	t.Helper()
 	// This ghConn is only for generating the policy file path segment based on the target repo's details
-	policyFilePathSegment := getPolicyPath(&models.Repository{
-		Hostname:      "github.com",
-		Path:          expectedPolicyOwner + "/" + expectedPolicyRepo,
-		DefaultBranch: expectedPolicyBranch,
-	}) // getPolicyPath is an existing function in the policy package
+	// Note: The new policy path format includes the policy repo owner between hostname and target owner
+	policyFilePathSegment := getPolicyPathWithAll("github.com", sourcePolicyRepoOwner, expectedPolicyOwner, expectedPolicyRepo)
 
 	// Construct the full expected API path suffix for the GetContents call
 	// sourcePolicyRepoOwner and sourcePolicyRepo are constants defined in policy_test.go (and policy.go)

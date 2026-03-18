@@ -4,17 +4,62 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
 	vpb "github.com/in-toto/attestation/go/predicates/vsa/v1"
 
 	"github.com/slsa-framework/source-tool/pkg/audit"
-	"github.com/slsa-framework/source-tool/pkg/ghcontrol"
 	"github.com/slsa-framework/source-tool/pkg/provenance"
 	"github.com/slsa-framework/source-tool/pkg/slsa"
+	"github.com/slsa-framework/source-tool/pkg/vcscontrol"
 )
+
+// mockConnection implements vcscontrol.Connection for testing
+type mockConnection struct {
+	owner   string
+	repo    string
+	fullRef string
+	repoUri string
+	vcsType vcscontrol.VcsType
+}
+
+func (m *mockConnection) VcsType() vcscontrol.VcsType { return m.vcsType }
+func (m *mockConnection) Owner() string               { return m.owner }
+func (m *mockConnection) Repo() string                { return m.repo }
+func (m *mockConnection) GetFullRef() string          { return m.fullRef }
+func (m *mockConnection) GetRepoUri() string          { return m.repoUri }
+func (m *mockConnection) GetLatestCommit(ctx context.Context, targetBranch string) (string, error) {
+	return "", nil
+}
+func (m *mockConnection) GetPriorCommit(ctx context.Context, sha string) (string, error) {
+	return "", nil
+}
+func (m *mockConnection) GetNotesForCommit(ctx context.Context, commit string) (string, error) {
+	return "", nil
+}
+func (m *mockConnection) BranchToFullRef(branch string) string {
+	return "refs/heads/" + branch
+}
+func (m *mockConnection) TagToFullRef(tag string) string {
+	return "refs/tags/" + tag
+}
+
+// mockControlStatus implements vcscontrol.ControlStatus for testing
+type mockControlStatus struct {
+	pushTime     time.Time
+	actorLogin   string
+	activityType string
+	controls     slsa.Controls
+}
+
+func (m *mockControlStatus) GetCommitPushTime() time.Time { return m.pushTime }
+func (m *mockControlStatus) GetActorLogin() string        { return m.actorLogin }
+func (m *mockControlStatus) GetActivityType() string      { return m.activityType }
+func (m *mockControlStatus) GetControls() slsa.Controls   { return m.controls }
 
 // assertJSONEqual compares two JSON values semantically (ignoring field order and formatting)
 func assertJSONEqual(t *testing.T, got, want interface{}) {
@@ -140,7 +185,13 @@ func TestAuditResultJSON_JSONMarshaling(t *testing.T) {
 }
 
 func TestConvertAuditResultToJSON(t *testing.T) {
-	ghc := ghcontrol.NewGhConnection("test-owner", "test-repo", "refs/heads/main")
+	conn := &mockConnection{
+		owner:   "test-owner",
+		repo:    "test-repo",
+		fullRef: "refs/heads/main",
+		repoUri: "https://github.com/test-owner/test-repo",
+		vcsType: vcscontrol.VcsTypeGitHub,
+	}
 
 	tests := []struct {
 		name   string
@@ -179,8 +230,8 @@ func TestConvertAuditResultToJSON(t *testing.T) {
 					Controls:   []*provenance.Control{{Name: "test_control"}},
 				},
 				GhPriorCommit: "def456",
-				GhControlStatus: &ghcontrol.GhControlStatus{
-					Controls: slsa.Controls{},
+				GhControlStatus: &mockControlStatus{
+					controls: slsa.Controls{},
 				},
 			},
 			mode: AuditModeFull,
@@ -246,7 +297,7 @@ func TestConvertAuditResultToJSON(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := convertAuditResultToJSON(ghc, tt.result, tt.mode)
+			got := convertAuditResultToJSON(conn, tt.result, tt.mode)
 
 			if got.Commit != tt.want.Commit {
 				t.Errorf("Commit = %v, want %v", got.Commit, tt.want.Commit)

@@ -84,6 +84,16 @@ type GhControlStatus struct {
 	Controls slsa.Controls
 }
 
+// GetCommitPushTime returns when the commit was pushed
+func (cs *GhControlStatus) GetCommitPushTime() time.Time {
+	return cs.CommitPushTime
+}
+
+// GetControls returns the controls that are enabled
+func (cs *GhControlStatus) GetControls() slsa.Controls {
+	return cs.Controls
+}
+
 // Adds the control, but only if it existed when the commit was pushed.
 func (cs *GhControlStatus) AddControl(newControls ...*provenance.Control) {
 	for _, newControl := range newControls {

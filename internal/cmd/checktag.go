@@ -9,13 +9,14 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/slsa-framework/source-tool/pkg/attest"
-	"github.com/slsa-framework/source-tool/pkg/ghcontrol"
 	"github.com/slsa-framework/source-tool/pkg/policy"
+	"github.com/slsa-framework/source-tool/pkg/vcscontrol"
 )
 
 type checkTagOptions struct {
@@ -27,6 +28,9 @@ type checkTagOptions struct {
 	outputSignedBundle string
 	useLocalPolicy     string
 	vsaRetries         uint8
+	policyRepo         string
+	policyHostname     string
+	policyPathOwner    string
 }
 
 func (cto *checkTagOptions) Validate() error {
@@ -46,6 +50,38 @@ func (cto *checkTagOptions) AddFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&cto.outputSignedBundle, "output_signed_bundle", "", "The path to write a bundle of signed attestations.")
 	cmd.PersistentFlags().StringVar(&cto.useLocalPolicy, "use_local_policy", "", "UNSAFE: Use the policy at this local path instead of the official one.")
 	cmd.PersistentFlags().Uint8Var(&cto.vsaRetries, "retries", 3, "Number of times to retry fetching the commit's VSA")
+	cmd.PersistentFlags().StringVar(&cto.policyRepo, "policy-repo", "", "policy repository (owner/repo format)")
+	cmd.PersistentFlags().StringVar(&cto.policyHostname, "policy-hostname", "", "hostname to use in policy path (e.g., opensuse.org)")
+	cmd.PersistentFlags().StringVar(&cto.policyPathOwner, "policy-path-owner", "", "owner to use in policy path (e.g., slsa-framework)")
+}
+
+// setGiteaPolicyDefaultsCheckTag sets default policy values when using Gitea
+func setGiteaPolicyDefaultsCheckTag(opts *checkTagOptions) {
+	if giteaURL != "" {
+		if opts.policyRepo == "" {
+			opts.policyRepo = "obs/slsa"
+		}
+		if opts.policyHostname == "" {
+			// Extract hostname from gitea URL (e.g., src.opensuse.org -> opensuse.org)
+			hostname := giteaURL
+			if strings.HasPrefix(hostname, "https://") {
+				hostname = strings.TrimPrefix(hostname, "https://")
+			} else if strings.HasPrefix(hostname, "http://") {
+				hostname = strings.TrimPrefix(hostname, "http://")
+			}
+			// Remove port if present
+			if idx := strings.Index(hostname, ":"); idx != -1 {
+				hostname = hostname[:idx]
+			}
+			// Extract the main domain (e.g., src.opensuse.org -> opensuse.org)
+			parts := strings.Split(hostname, ".")
+			if len(parts) >= 2 {
+				opts.policyHostname = strings.Join(parts[len(parts)-2:], ".")
+			} else {
+				opts.policyHostname = hostname
+			}
+		}
+	}
 }
 
 func addCheckTag(parentCmd *cobra.Command) {
@@ -55,6 +91,21 @@ func addCheckTag(parentCmd *cobra.Command) {
 		Use:     "checktag",
 		GroupID: "assessment",
 		Short:   "Checks to see if the tag operation should be allowed and issues a VSA",
+		PreRunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				// Parse owner/repo from args[0] if provided
+				pts := strings.Split(strings.TrimPrefix(strings.TrimSuffix(args[0], "/"), "/"), "/")
+				if len(pts) == 2 {
+					opts.owner = pts[0]
+					opts.repository = pts[1]
+				}
+			}
+			if err := opts.repoOptions.Validate(); err != nil {
+				return err
+			}
+			setGiteaPolicyDefaultsCheckTag(opts)
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return doCheckTag(opts)
 		},
@@ -65,15 +116,26 @@ func addCheckTag(parentCmd *cobra.Command) {
 }
 
 func doCheckTag(args *checkTagOptions) error {
-	ghconnection := ghcontrol.NewGhConnection(args.owner, args.repository, ghcontrol.TagToFullRef(args.tagName)).WithAuthToken(githubToken)
+	factory := vcscontrol.NewFactory()
+	hostname := ""
+	if giteaURL != "" {
+		hostname = giteaURL
+	}
+
+	// Create VCS control to get both connection and provider
+	vcsCtrl, err := factory.CreateVcsControl(args.owner, args.repository, args.tagName, hostname, githubToken)
+	if err != nil {
+		return fmt.Errorf("creating VCS control: %w", err)
+	}
+
 	ctx := context.Background()
 	verifier := getVerifier(&args.verifierOptions)
 
 	// Create tag provenance.
-	pa := attest.NewProvenanceAttestor(ghconnection, verifier)
+	pa := attest.NewProvenanceAttestor(vcsCtrl, verifier)
 	pa.Options.VsaRetries = args.vsaRetries // Retry fetching the commit's VSA
 
-	prov, err := pa.CreateTagProvenance(ctx, args.commit, ghcontrol.TagToFullRef(args.tagName), args.actor)
+	prov, err := pa.CreateTagProvenance(ctx, args.commit, vcsCtrl.TagToFullRef(args.tagName), args.actor)
 	if err != nil {
 		return fmt.Errorf("creating tag provenance metadata: %w", err)
 	}
@@ -81,13 +143,17 @@ func doCheckTag(args *checkTagOptions) error {
 	// check p against policy
 	pe := policy.NewPolicyEvaluator()
 	pe.UseLocalPolicy = args.useLocalPolicy
+	pe.PolicyRepo = args.policyRepo
+	pe.PolicyHostname = args.policyHostname
+	pe.PolicyPathOwner = args.policyPathOwner
+	pe.GiteaURL = hostname
 	verifiedLevels, policyPath, err := pe.EvaluateTagProv(ctx, args.GetRepository(), prov)
 	if err != nil {
 		return fmt.Errorf("evaluating the tag provenance metadata: %w", err)
 	}
 
 	// create vsa
-	unsignedVsa, err := attest.CreateUnsignedSourceVsa(ghconnection.GetRepoUri(), ghconnection.GetFullRef(), args.commit, verifiedLevels, policyPath)
+	unsignedVsa, err := attest.CreateUnsignedSourceVsa(vcsCtrl.GetRepoUri(), vcsCtrl.GetFullRef(), args.commit, verifiedLevels, policyPath)
 	if err != nil {
 		return err
 	}

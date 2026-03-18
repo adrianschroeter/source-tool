@@ -8,18 +8,49 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/slsa-framework/source-tool/pkg/attest"
-	"github.com/slsa-framework/source-tool/pkg/ghcontrol"
 	"github.com/slsa-framework/source-tool/pkg/policy"
+	"github.com/slsa-framework/source-tool/pkg/vcscontrol"
 )
+
+// setGiteaPolicyDefaults sets default policy values when using Gitea
+func setGiteaPolicyDefaults(opts *checkLevelOpts) {
+	if giteaURL != "" {
+		if opts.policyRepo == "" {
+			opts.policyRepo = "obs/slsa"
+		}
+		if opts.policyHostname == "" {
+			// Extract hostname from gitea URL (e.g., src.opensuse.org -> opensuse.org)
+			hostname := giteaURL
+			if strings.HasPrefix(hostname, "https://") {
+				hostname = strings.TrimPrefix(hostname, "https://")
+			} else if strings.HasPrefix(hostname, "http://") {
+				hostname = strings.TrimPrefix(hostname, "http://")
+			}
+			// Remove port if present
+			if idx := strings.Index(hostname, ":"); idx != -1 {
+				hostname = hostname[:idx]
+			}
+			// Extract the main domain (e.g., src.opensuse.org -> opensuse.org)
+			parts := strings.Split(hostname, ".")
+			if len(parts) >= 2 {
+				opts.policyHostname = strings.Join(parts[len(parts)-2:], ".")
+			} else {
+				opts.policyHostname = hostname
+			}
+		}
+	}
+}
 
 type checkLevelOpts struct {
 	commitOptions
 	outputVsa, outputUnsignedVsa, useLocalPolicy string
 	allowMergeCommits                            bool
+	policyRepo, policyHostname, policyPathOwner  string
 }
 
 func (clo *checkLevelOpts) Validate() error {
@@ -36,6 +67,9 @@ func (clo *checkLevelOpts) AddFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&clo.outputUnsignedVsa, "output_unsigned_vsa", "", "The path to write an unsigned vsa with the determined level.")
 	cmd.PersistentFlags().StringVar(&clo.useLocalPolicy, "use_local_policy", "", "UNSAFE: Use the policy at this local path instead of the official one.")
 	cmd.PersistentFlags().BoolVar(&clo.allowMergeCommits, "allow-merge-commits", false, "[EXPERIMENTAL] Allow merge commits in branch.")
+	cmd.PersistentFlags().StringVar(&clo.policyRepo, "policy-repo", "", "policy repository (owner/repo format)")
+	cmd.PersistentFlags().StringVar(&clo.policyHostname, "policy-hostname", "", "hostname to use in policy path (e.g., opensuse.org)")
+	cmd.PersistentFlags().StringVar(&clo.policyPathOwner, "policy-path-owner", "", "owner to use in policy path (e.g., slsa-framework)")
 }
 
 func addCheckLevel(parentCmd *cobra.Command) {
@@ -61,6 +95,9 @@ This is meant to be run within the corresponding GitHub Actions workflow.`,
 				return err
 			}
 
+			// Set Gitea policy defaults
+			setGiteaPolicyDefaults(&opts)
+
 			if err := opts.EnsureDefaults(); err != nil {
 				return err
 			}
@@ -79,23 +116,56 @@ This is meant to be run within the corresponding GitHub Actions workflow.`,
 }
 
 func doCheckLevel(cla *checkLevelOpts) error {
-	ghconnection := ghcontrol.NewGhConnection(cla.owner, cla.repository, ghcontrol.BranchToFullRef(cla.branch)).WithAuthToken(githubToken)
-	ghconnection.Options.AllowMergeCommits = cla.allowMergeCommits
+	var repoUri string
+	var fullRef string
+	var controlStatus vcscontrol.ControlStatus
+	var err error
 
 	ctx := context.Background()
-	controlStatus, err := ghconnection.GetBranchControlsAtCommit(ctx, cla.commit, ghconnection.GetFullRef())
-	if err != nil {
-		return err
+
+	factory := vcscontrol.NewFactory()
+
+	// Determine the hostname to use
+	hostname := ""
+	if giteaURL != "" {
+		hostname = giteaURL
 	}
+
+	// Create VCS connection to get the full ref
+	conn, connErr := factory.CreateConnection(cla.owner, cla.repository, cla.branch, hostname, githubToken)
+	if connErr != nil {
+		return fmt.Errorf("creating VCS connection: %w", connErr)
+	}
+	fullRef = conn.BranchToFullRef(cla.branch)
+
+	// Now create VCS control with the full ref
+	vcsCtrl, ctrlErr := factory.CreateVcsControl(cla.owner, cla.repository, fullRef, hostname, githubToken)
+	if ctrlErr != nil {
+		return fmt.Errorf("creating VCS control: %w", ctrlErr)
+	}
+
+	repoUri = conn.GetRepoUri()
+
+	// Get branch controls at commit
+	status, statusErr := vcsCtrl.GetBranchControlsAtCommit(ctx, cla.commit, fullRef)
+	if statusErr != nil {
+		return statusErr
+	}
+	controlStatus = status
+
 	pe := policy.NewPolicyEvaluator()
 	pe.UseLocalPolicy = cla.useLocalPolicy
-	verifiedLevels, policyPath, err := pe.EvaluateControl(ctx, cla.GetRepository(), cla.GetBranch(), controlStatus)
-	if err != nil {
-		return err
+	pe.PolicyRepo = cla.policyRepo
+	pe.PolicyHostname = cla.policyHostname
+	pe.PolicyPathOwner = cla.policyPathOwner
+	pe.GiteaURL = hostname
+	verifiedLevels, policyPath, evalErr := pe.EvaluateControl(ctx, cla.GetRepository(), cla.GetBranch(), controlStatus)
+	if evalErr != nil {
+		return evalErr
 	}
 	fmt.Print(verifiedLevels)
 
-	unsignedVsa, err := attest.CreateUnsignedSourceVsa(ghconnection.GetRepoUri(), ghconnection.GetFullRef(), cla.commit, verifiedLevels, policyPath)
+	unsignedVsa, err := attest.CreateUnsignedSourceVsa(repoUri, fullRef, cla.commit, verifiedLevels, policyPath)
 	if err != nil {
 		return err
 	}

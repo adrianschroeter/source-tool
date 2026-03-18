@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/slsa-framework/source-tool/pkg/attest"
-	"github.com/slsa-framework/source-tool/pkg/ghcontrol"
+	"github.com/slsa-framework/source-tool/pkg/vcscontrol"
 )
 
 type provOptions struct {
@@ -75,10 +75,21 @@ func addProv(parentCmd *cobra.Command) {
 }
 
 func doProv(opts *provOptions) error {
-	ghconnection := ghcontrol.NewGhConnection(opts.owner, opts.repository, ghcontrol.BranchToFullRef(opts.branch)).WithAuthToken(githubToken)
+	factory := vcscontrol.NewFactory()
+	hostname := ""
+	if giteaURL != "" {
+		hostname = giteaURL
+	}
+
+	// Use CreateVcsControl to get both connection and provider
+	vcsCtrl, err := factory.CreateVcsControl(opts.owner, opts.repository, opts.branch, hostname, githubToken)
+	if err != nil {
+		return fmt.Errorf("creating VCS control: %w", err)
+	}
+
 	ctx := context.Background()
-	pa := attest.NewProvenanceAttestor(ghconnection, getVerifier(&opts.verifierOptions))
-	newProv, err := pa.CreateSourceProvenance(ctx, opts.prevAttPath, opts.commit, opts.prevCommit, ghconnection.GetFullRef())
+	pa := attest.NewProvenanceAttestor(vcsCtrl, getVerifier(&opts.verifierOptions))
+	newProv, err := pa.CreateSourceProvenance(ctx, opts.prevAttPath, opts.commit, opts.prevCommit, vcsCtrl.GetFullRef())
 	if err != nil {
 		return err
 	}

@@ -12,7 +12,7 @@ import (
 
 	"github.com/slsa-framework/source-tool/pkg/attest"
 	"github.com/slsa-framework/source-tool/pkg/audit"
-	"github.com/slsa-framework/source-tool/pkg/ghcontrol"
+	"github.com/slsa-framework/source-tool/pkg/vcscontrol"
 )
 
 type AuditMode int
@@ -161,7 +161,7 @@ Future:
 	parentCmd.AddCommand(auditCmd)
 }
 
-func printResult(ghc *ghcontrol.GitHubConnection, ar *audit.AuditCommitResult, mode AuditMode) {
+func printResult(conn vcscontrol.Connection, ar *audit.AuditCommitResult, mode AuditMode) {
 	good := ar.IsGood()
 	status := statusPassed
 	if !good {
@@ -182,21 +182,41 @@ func printResult(ghc *ghcontrol.GitHubConnection, ar *audit.AuditCommitResult, m
 		fmt.Print("\tprov:\n")
 		fmt.Printf("\t\tcontrols: %v\n", ar.ProvPred.GetControls())
 		if ar.ProvPred.GetPrevCommit() == ar.GhPriorCommit {
-			fmt.Printf("\t\tPrevCommit matches GH commit: true\n")
+			fmt.Printf("\t\tPrevCommit matches VCS commit: true\n")
 		} else {
-			fmt.Printf("\t\tPrevCommit matches GH commit: false: %s != %s\n", ar.ProvPred.GetPrevCommit(), ar.GhPriorCommit)
+			fmt.Printf("\t\tPrevCommit matches VCS commit: false: %s != %s\n", ar.ProvPred.GetPrevCommit(), ar.GhPriorCommit)
 		}
 	} else {
 		fmt.Printf("\tprov: none\n")
 	}
 	if ar.GhControlStatus != nil {
-		fmt.Printf("\tgh controls: %v\n", ar.GhControlStatus.Controls)
+		fmt.Printf("\tcontrols: %v\n", ar.GhControlStatus.GetControls())
 	}
 
-	fmt.Printf("\tlink: https://github.com/%s/%s/commit/%s\n", ghc.Owner(), ghc.Repo(), ar.GhPriorCommit)
+	// Generate link based on VCS type
+	link := getCommitLink(conn, ar.GhPriorCommit)
+	fmt.Printf("\tlink: %s\n", link)
 }
 
-func convertAuditResultToJSON(ghc *ghcontrol.GitHubConnection, ar *audit.AuditCommitResult, mode AuditMode) AuditCommitResultJSON {
+// getCommitLink generates a commit link based on the VCS type
+func getCommitLink(conn vcscontrol.Connection, commit string) string {
+	owner := conn.Owner()
+	repo := conn.Repo()
+
+	switch conn.VcsType() {
+	case vcscontrol.VcsTypeGitHub:
+		return fmt.Sprintf("https://github.com/%s/%s/commit/%s", owner, repo, commit)
+	case vcscontrol.VcsTypeGitea:
+		// For Gitea, extract hostname from repo URI
+		repoUri := conn.GetRepoUri()
+		// repoUri format: https://gitea.example.com/owner/repo
+		return fmt.Sprintf("%s/commit/%s", repoUri, commit)
+	default:
+		return fmt.Sprintf("https://github.com/%s/%s/commit/%s", owner, repo, commit)
+	}
+}
+
+func convertAuditResultToJSON(conn vcscontrol.Connection, ar *audit.AuditCommitResult, mode AuditMode) AuditCommitResultJSON {
 	good := ar.IsGood()
 	status := statusPassed
 	if !good {
@@ -206,7 +226,7 @@ func convertAuditResultToJSON(ghc *ghcontrol.GitHubConnection, ar *audit.AuditCo
 	result := AuditCommitResultJSON{
 		Commit: ar.Commit,
 		Status: status,
-		Link:   fmt.Sprintf("https://github.com/%s/%s/commit/%s", ghc.Owner(), ghc.Repo(), ar.GhPriorCommit),
+		Link:   getCommitLink(conn, ar.GhPriorCommit),
 	}
 
 	// Only include details if mode is Full or status is failed
@@ -224,7 +244,7 @@ func convertAuditResultToJSON(ghc *ghcontrol.GitHubConnection, ar *audit.AuditCo
 		}
 
 		if ar.GhControlStatus != nil {
-			result.GhControls = ar.GhControlStatus.Controls
+			result.GhControls = ar.GhControlStatus.GetControls()
 		}
 	}
 
@@ -232,14 +252,31 @@ func convertAuditResultToJSON(ghc *ghcontrol.GitHubConnection, ar *audit.AuditCo
 }
 
 func doAudit(auditArgs *auditOpts) error {
-	ghc := ghcontrol.NewGhConnection(auditArgs.owner, auditArgs.repository, ghcontrol.BranchToFullRef(auditArgs.branch)).WithAuthToken(githubToken)
+	factory := vcscontrol.NewFactory()
+	hostname := ""
+	if giteaURL != "" {
+		hostname = giteaURL
+	}
+
+	// Create VCS connection
+	conn, err := factory.CreateConnection(auditArgs.owner, auditArgs.repository, auditArgs.branch, hostname, githubToken)
+	if err != nil {
+		return fmt.Errorf("creating VCS connection: %w", err)
+	}
+
+	// Create VCS control for control checking
+	vcsCtrl, err := factory.CreateVcsControl(auditArgs.owner, auditArgs.repository, auditArgs.branch, hostname, githubToken)
+	if err != nil {
+		return fmt.Errorf("creating VCS control: %w", err)
+	}
+
 	ctx := context.Background()
 	verifier := getVerifier(&auditArgs.verifierOptions)
-	pa := attest.NewProvenanceAttestor(ghc, verifier)
+	pa := attest.NewProvenanceAttestor(vcsCtrl, verifier)
 
-	auditor := audit.NewAuditor(ghc, pa, verifier)
+	auditor := audit.NewAuditor(conn, vcsCtrl, pa, verifier)
 
-	latestCommit, err := ghc.GetLatestCommit(ctx, auditArgs.branch)
+	latestCommit, err := conn.GetLatestCommit(ctx, auditArgs.branch)
 	if err != nil {
 		return fmt.Errorf("could not get latest commit for %s", auditArgs.branch)
 	}
@@ -271,7 +308,7 @@ func doAudit(auditArgs *auditOpts) error {
 
 		// Process result based on output format
 		if auditArgs.outputFormatIsJSON() {
-			commitResult := convertAuditResultToJSON(ghc, ar, auditArgs.auditMode)
+			commitResult := convertAuditResultToJSON(conn, ar, auditArgs.auditMode)
 			if err != nil {
 				commitResult.Error = err.Error()
 			}
@@ -286,7 +323,7 @@ func doAudit(auditArgs *auditOpts) error {
 			if err != nil {
 				auditArgs.writeTextf("\terror: %v\n", err)
 			}
-			printResult(ghc, ar, auditArgs.auditMode)
+			printResult(conn, ar, auditArgs.auditMode)
 		}
 
 		// Check for early termination conditions

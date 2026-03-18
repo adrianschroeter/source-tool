@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/slsa-framework/source-tool/pkg/attest"
-	"github.com/slsa-framework/source-tool/pkg/ghcontrol"
+	"github.com/slsa-framework/source-tool/pkg/vcscontrol"
 )
 
 type verifyCommitOptions struct {
@@ -92,31 +92,55 @@ func addVerifyCommit(cmd *cobra.Command) {
 			return doVerifyCommit(&opts)
 		},
 	}
-	opts.AddFlags(cmd)
+	opts.AddFlags(verifyCommitCmd)
 	cmd.AddCommand(verifyCommitCmd)
 }
 
 func doVerifyCommit(opts *verifyCommitOptions) error {
-	var ref string
+	// Use the unified vcscontrol factory
+	factory := vcscontrol.NewFactory()
+	hostname := ""
+	if giteaURL != "" {
+		hostname = giteaURL
+	}
+
+	// Determine ref type and name
 	var refType string
 	var refName string
+	var ref string
+
 	switch {
 	case opts.branch != "":
-		ref = ghcontrol.BranchToFullRef(opts.branch)
 		refType = "branch"
 		refName = opts.branch
+		// Create connection first, then use its methods
+		conn, err := factory.CreateConnection(opts.owner, opts.repository, opts.branch, hostname, githubToken)
+		if err != nil {
+			return fmt.Errorf("creating VCS connection: %w", err)
+		}
+		ref = conn.BranchToFullRef(opts.branch)
 	case opts.tag != "":
-		ref = ghcontrol.TagToFullRef(opts.tag)
 		refType = "tag"
 		refName = opts.tag
+		// Create connection first, then use its methods
+		conn, err := factory.CreateConnection(opts.owner, opts.repository, opts.tag, hostname, githubToken)
+		if err != nil {
+			return fmt.Errorf("creating VCS connection: %w", err)
+		}
+		ref = conn.TagToFullRef(opts.tag)
 	default:
 		return fmt.Errorf("must specify either branch or tag")
 	}
 
-	ghconnection := ghcontrol.NewGhConnection(opts.owner, opts.repository, ref).WithAuthToken(githubToken)
+	// Recreate connection with the correct ref
+	conn, err := factory.CreateConnection(opts.owner, opts.repository, ref, hostname, githubToken)
+	if err != nil {
+		return fmt.Errorf("creating VCS connection: %w", err)
+	}
+
 	ctx := context.Background()
 
-	_, vsaPred, err := attest.GetVsa(ctx, ghconnection, getVerifier(&opts.verifierOptions), opts.commit, ghconnection.GetFullRef())
+	_, vsaPred, err := attest.GetVsa(ctx, conn, getVerifier(&opts.verifierOptions), opts.commit, conn.GetFullRef())
 	if err != nil {
 		return err
 	}
@@ -131,9 +155,13 @@ func doVerifyCommit(opts *verifyCommitOptions) error {
 	}
 
 	if vsaPred == nil {
+		host := "github.com"
+		if giteaURL != "" {
+			host = giteaURL
+		}
 		result.Message = fmt.Sprintf(
-			"no VSA matching commit '%s' on %s '%s' found in github.com/%s/%s",
-			opts.commit, refType, refName, opts.owner, opts.repository,
+			"no VSA matching commit '%s' on %s '%s' found in %s/%s/%s",
+			opts.commit, refType, refName, host, opts.owner, opts.repository,
 		)
 		return opts.writeResult(result)
 	}

@@ -32,6 +32,7 @@ import (
 	"github.com/slsa-framework/source-tool/pkg/slsa"
 	"github.com/slsa-framework/source-tool/pkg/sourcetool/backends/attestation/notes"
 	"github.com/slsa-framework/source-tool/pkg/sourcetool/models"
+	"github.com/slsa-framework/source-tool/pkg/vcs"
 )
 
 const (
@@ -738,7 +739,8 @@ func NewPolicyEvaluator() *PolicyEvaluator {
 }
 
 // EvaluateControl checks the control against the policy and returns the resulting source level and policy path.
-func (pe *PolicyEvaluator) EvaluateControl(ctx context.Context, repo *models.Repository, branch *models.Branch, controlStatus *ghcontrol.GhControlStatus) (slsa.SourceVerifiedLevels, string, error) {
+// Accepts both GitHub and Gitea control status via the vcs.ControlStatus interface.
+func (pe *PolicyEvaluator) EvaluateControl(ctx context.Context, repo *models.Repository, branch *models.Branch, controlStatus vcs.ControlStatus) (slsa.SourceVerifiedLevels, string, error) {
 	// We want to check to ensure the repo hasn't enabled/disabled the rules since
 	// setting the 'since' field in their policy.
 	rp, policyPath, err := pe.GetPolicy(ctx, repo)
@@ -752,12 +754,12 @@ func (pe *PolicyEvaluator) EvaluateControl(ctx context.Context, repo *models.Rep
 		policyPath = "DEFAULT"
 	}
 
-	if controlStatus.CommitPushTime.Before(branchPolicy.GetSince().AsTime()) {
+	if controlStatus.GetCommitPushTime().Before(branchPolicy.GetSince().AsTime()) {
 		// This commit was pushed before they had an explicit policy.
 		return slsa.SourceVerifiedLevels{slsa.ControlName(slsa.SlsaSourceLevel1)}, policyPath, nil
 	}
 
-	verifiedLevels, err := evaluateBranchControls(branchPolicy, rp.GetProtectedTag(), controlStatus.Controls)
+	verifiedLevels, err := evaluateBranchControls(branchPolicy, rp.GetProtectedTag(), controlStatus.GetControls())
 	if err != nil {
 		return verifiedLevels, policyPath, fmt.Errorf("error evaluating policy %s: %w", policyPath, err)
 	}

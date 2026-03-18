@@ -23,6 +23,8 @@ import (
 	"github.com/slsa-framework/source-tool/pkg/ghcontrol"
 	"github.com/slsa-framework/source-tool/pkg/provenance"
 	"github.com/slsa-framework/source-tool/pkg/slsa"
+	"github.com/slsa-framework/source-tool/pkg/vcs"
+	"github.com/slsa-framework/source-tool/pkg/vcscontrol"
 )
 
 type ProvenanceAttestorOptions struct {
@@ -30,14 +32,98 @@ type ProvenanceAttestorOptions struct {
 }
 
 type ProvenanceAttestor struct {
-	verifier      Verifier
-	gh_connection *ghcontrol.GitHubConnection
-	Options       ProvenanceAttestorOptions
+	verifier Verifier
+	conn     vcscontrol.Connection
+	provider vcscontrol.ControlProvider
+	Options  ProvenanceAttestorOptions
 }
 
-func NewProvenanceAttestor(gh_connection *ghcontrol.GitHubConnection, verifier Verifier) *ProvenanceAttestor {
-	return &ProvenanceAttestor{verifier: verifier, gh_connection: gh_connection}
+// NewProvenanceAttestor creates a new ProvenanceAttestor
+// Accepts both GitHub connection (for backwards compatibility) and vcscontrol.VcsControl
+func NewProvenanceAttestor(conn any, verifier Verifier) *ProvenanceAttestor {
+	pa := &ProvenanceAttestor{verifier: verifier}
+
+	// Check if it's a VcsControl with both connection and provider
+	if vc, ok := conn.(*vcscontrol.VcsControl); ok {
+		info := vc.GetControlInfo()
+		pa.conn = info.Connection
+		pa.provider = info.ControlProvider
+	} else if ghConn, ok := conn.(*ghcontrol.GitHubConnection); ok {
+		// Backwards compatibility for GitHub connections
+		pa.conn = &ghControlWrapper{conn: ghConn}
+		pa.provider = &ghControlProviderWrapper{conn: ghConn}
+	} else if c, ok := conn.(vcscontrol.Connection); ok {
+		// It's already a vcscontrol.Connection
+		pa.conn = c
+		// Try to use the connection as provider if it implements ControlProvider
+		if p, ok := conn.(vcscontrol.ControlProvider); ok {
+			pa.provider = p
+		}
+	}
+
+	return pa
 }
+
+// ghControlWrapper wraps a GitHub connection to implement vcscontrol.Connection
+type ghControlWrapper struct {
+	conn *ghcontrol.GitHubConnection
+}
+
+func (g *ghControlWrapper) VcsType() vcscontrol.VcsType { return vcscontrol.VcsTypeGitHub }
+func (g *ghControlWrapper) Owner() string               { return g.conn.Owner() }
+func (g *ghControlWrapper) Repo() string                { return g.conn.Repo() }
+func (g *ghControlWrapper) GetFullRef() string          { return g.conn.GetFullRef() }
+func (g *ghControlWrapper) GetRepoUri() string          { return g.conn.GetRepoUri() }
+func (g *ghControlWrapper) GetLatestCommit(ctx context.Context, targetBranch string) (string, error) {
+	return g.conn.GetLatestCommit(ctx, targetBranch)
+}
+func (g *ghControlWrapper) GetPriorCommit(ctx context.Context, sha string) (string, error) {
+	return g.conn.GetPriorCommit(ctx, sha)
+}
+func (g *ghControlWrapper) GetNotesForCommit(ctx context.Context, commit string) (string, error) {
+	return g.conn.GetNotesForCommit(ctx, commit)
+}
+func (g *ghControlWrapper) BranchToFullRef(branch string) string {
+	return ghcontrol.BranchToFullRef(branch)
+}
+func (g *ghControlWrapper) TagToFullRef(tag string) string {
+	return ghcontrol.TagToFullRef(tag)
+}
+
+// ghControlProviderWrapper wraps a GitHub connection to implement vcscontrol.ControlProvider
+type ghControlProviderWrapper struct {
+	conn *ghcontrol.GitHubConnection
+}
+
+func (p *ghControlProviderWrapper) GetBranchControls(ctx context.Context, ref string) (*slsa.Controls, error) {
+	return p.conn.GetBranchControls(ctx, ref)
+}
+
+func (p *ghControlProviderWrapper) GetBranchControlsAtCommit(ctx context.Context, commit, ref string) (vcscontrol.ControlStatus, error) {
+	status, err := p.conn.GetBranchControlsAtCommit(ctx, commit, ref)
+	if err != nil {
+		return nil, err
+	}
+	return &ghControlStatusWrapper{status: status}, nil
+}
+
+func (p *ghControlProviderWrapper) GetTagControls(ctx context.Context) (vcscontrol.ControlStatus, error) {
+	status, err := p.conn.GetTagControls(ctx, "", "")
+	if err != nil {
+		return nil, err
+	}
+	return &ghControlStatusWrapper{status: status}, nil
+}
+
+// ghControlStatusWrapper wraps GitHub control status to implement vcscontrol.ControlStatus
+type ghControlStatusWrapper struct {
+	status *ghcontrol.GhControlStatus
+}
+
+func (s *ghControlStatusWrapper) GetCommitPushTime() time.Time { return s.status.CommitPushTime }
+func (s *ghControlStatusWrapper) GetActorLogin() string        { return s.status.ActorLogin }
+func (s *ghControlStatusWrapper) GetActivityType() string      { return s.status.ActivityType }
+func (s *ghControlStatusWrapper) GetControls() slsa.Controls   { return s.status.Controls }
 
 func GetSourceProvPred(statement *spb.Statement) (*provenance.SourceProvenancePred, error) {
 	if statement == nil {
@@ -128,7 +214,7 @@ func addPredToStatement(provPred any, predicateType, commit string) (*spb.Statem
 
 // Create provenance for the current commit without any context from the previous provenance (if any).
 func (pa ProvenanceAttestor) createCurrentProvenance(ctx context.Context, commit, prevCommit, ref string) (*spb.Statement, error) {
-	controlStatus, err := pa.gh_connection.GetBranchControlsAtCommit(ctx, commit, ref)
+	controlStatus, err := pa.provider.GetBranchControlsAtCommit(ctx, commit, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -137,12 +223,12 @@ func (pa ProvenanceAttestor) createCurrentProvenance(ctx context.Context, commit
 
 	var curProvPred provenance.SourceProvenancePred
 	curProvPred.PrevCommit = prevCommit
-	curProvPred.RepoUri = pa.gh_connection.GetRepoUri()
-	curProvPred.Actor = controlStatus.ActorLogin
-	curProvPred.ActivityType = controlStatus.ActivityType
+	curProvPred.RepoUri = pa.conn.GetRepoUri()
+	curProvPred.Actor = controlStatus.GetActorLogin()
+	curProvPred.ActivityType = controlStatus.GetActivityType()
 	curProvPred.Branch = ref
 	curProvPred.CreatedOn = timestamppb.New(curTime)
-	curProvPred.Controls = controlStatus.Controls
+	curProvPred.Controls = controlStatus.GetControls()
 
 	// At the very least provenance is available starting now. :)
 	// ... indeed, but don't set the `since`` date because doing so breaks
@@ -159,7 +245,7 @@ func (pa ProvenanceAttestor) createCurrentProvenance(ctx context.Context, commit
 
 // Gets provenance for the commit from git notes.
 func (pa ProvenanceAttestor) GetProvenance(ctx context.Context, commit, ref string) (*spb.Statement, *provenance.SourceProvenancePred, error) {
-	notes, err := pa.gh_connection.GetNotesForCommit(ctx, commit)
+	notes, err := pa.conn.GetNotesForCommit(ctx, commit)
 	if notes == "" {
 		Debugf("didn't find notes for commit %s", commit)
 		return nil, nil, nil
@@ -193,7 +279,7 @@ func (pa ProvenanceAttestor) getProvFromReader(reader *BundleReader, commit, ref
 		if err != nil {
 			return nil, nil, err
 		}
-		if pa.gh_connection.GetRepoUri() == provPred.GetRepoUri() && (ref == ghcontrol.AnyReference || provPred.GetBranch() == ref) {
+		if pa.conn.GetRepoUri() == provPred.GetRepoUri() && (ref == vcs.AnyReference || provPred.GetBranch() == ref) {
 			// Should be good!
 			return stmt, provPred, nil
 		} else {
@@ -265,7 +351,7 @@ func (pa ProvenanceAttestor) CreateTagProvenance(ctx context.Context, commit, re
 	// 2. Get a VSA associated with this commit, if any.
 	// 3. Record the levels and branches covered by that VSA in the provenance.
 
-	controlStatus, err := pa.gh_connection.GetTagControls(ctx, commit, ref)
+	controlStatus, err := pa.provider.GetTagControls(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +363,7 @@ func (pa ProvenanceAttestor) CreateTagProvenance(ctx context.Context, commit, re
 	var vsaStatement *spb.Statement
 	var vsaPred *v1.VerificationSummary
 	for {
-		vsaStatement, vsaPred, err = GetVsa(ctx, pa.gh_connection, pa.verifier, commit, ghcontrol.AnyReference)
+		vsaStatement, vsaPred, err = GetVsa(ctx, pa.conn, pa.verifier, commit, vcs.AnyReference)
 		if err != nil {
 			return nil, fmt.Errorf("error fetching VSA when creating tag provenance %w", err)
 		}
@@ -300,11 +386,11 @@ func (pa ProvenanceAttestor) CreateTagProvenance(ctx context.Context, commit, re
 	}
 
 	curProvPred := provenance.TagProvenancePred{
-		RepoUri:   pa.gh_connection.GetRepoUri(),
+		RepoUri:   pa.conn.GetRepoUri(),
 		Actor:     actor,
 		Tag:       ref,
 		CreatedOn: timestamppb.Now(),
-		Controls:  controlStatus.Controls,
+		Controls:  controlStatus.GetControls(),
 		VsaSummaries: []*provenance.VsaSummary{
 			{
 				SourceRefs:     vsaRefs,

@@ -97,7 +97,7 @@ sourcetool status myorg/myrepo@mybranch
 			// If using Gitea, set default policy repo and hostname
 			if giteaURL != "" {
 				if opts.policyRepo == "" {
-					opts.policyRepo = "adrianSuSE/slsa"
+					opts.policyRepo = "obs/slsa"
 				}
 				if opts.policyHostname == "" {
 					// Extract hostname from gitea URL (e.g., src.opensuse.org -> opensuse.org)

@@ -22,8 +22,8 @@ import (
 
 	"github.com/slsa-framework/source-tool/pkg/attest"
 	"github.com/slsa-framework/source-tool/pkg/auth"
-	"github.com/slsa-framework/source-tool/pkg/ghcontrol"
 	"github.com/slsa-framework/source-tool/pkg/policy"
+	"github.com/slsa-framework/source-tool/pkg/vcscontrol"
 )
 
 type pushOptions struct {
@@ -116,6 +116,35 @@ func (po *pushOptions) GetCollectorAgent(opts commitOptions, token string) (*col
 	return agent, nil
 }
 
+// setGiteaPolicyDefaultsCheckLevelProv sets default policy values when using Gitea
+func setGiteaPolicyDefaultsCheckLevelProv(opts *checkLevelProvOpts) {
+	if giteaURL != "" {
+		if opts.policyRepo == "" {
+			opts.policyRepo = "obs/slsa"
+		}
+		if opts.policyHostname == "" {
+			// Extract hostname from gitea URL (e.g., src.opensuse.org -> opensuse.org)
+			hostname := giteaURL
+			if strings.HasPrefix(hostname, "https://") {
+				hostname = strings.TrimPrefix(hostname, "https://")
+			} else if strings.HasPrefix(hostname, "http://") {
+				hostname = strings.TrimPrefix(hostname, "http://")
+			}
+			// Remove port if present
+			if idx := strings.Index(hostname, ":"); idx != -1 {
+				hostname = hostname[:idx]
+			}
+			// Extract the main domain (e.g., src.opensuse.org -> opensuse.org)
+			parts := strings.Split(hostname, ".")
+			if len(parts) >= 2 {
+				opts.policyHostname = strings.Join(parts[len(parts)-2:], ".")
+			} else {
+				opts.policyHostname = hostname
+			}
+		}
+	}
+}
+
 type checkLevelProvOpts struct {
 	commitOptions
 	verifierOptions
@@ -126,6 +155,9 @@ type checkLevelProvOpts struct {
 	outputSignedBundle   string
 	useLocalPolicy       string
 	allowMergeCommits    bool
+	policyRepo           string
+	policyHostname       string
+	policyPathOwner      string
 }
 
 func (clp *checkLevelProvOpts) Validate() error {
@@ -144,6 +176,9 @@ func (clp *checkLevelProvOpts) AddFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&clp.outputSignedBundle, "output_signed_bundle", "", "The path to write a bundle of signed attestations.")
 	cmd.PersistentFlags().StringVar(&clp.useLocalPolicy, "use_local_policy", "", "UNSAFE: Use the policy at this local path instead of the official one.")
 	cmd.PersistentFlags().BoolVar(&clp.allowMergeCommits, "allow-merge-commits", false, "[EXPERIMENTAL] Allow merge commits in branch")
+	cmd.PersistentFlags().StringVar(&clp.policyRepo, "policy-repo", "", "policy repository (owner/repo format)")
+	cmd.PersistentFlags().StringVar(&clp.policyHostname, "policy-hostname", "", "hostname to use in policy path (e.g., opensuse.org)")
+	cmd.PersistentFlags().StringVar(&clp.policyPathOwner, "policy-path-owner", "", "owner to use in policy path (e.g., slsa-framework)")
 }
 
 func addCheckLevelProv(parentCmd *cobra.Command) {
@@ -178,6 +213,9 @@ and pushed to its remote (--push=note).
 				return err
 			}
 
+			// Set Gitea policy defaults
+			setGiteaPolicyDefaultsCheckLevelProv(opts)
+
 			if err := opts.EnsureDefaults(); err != nil {
 				return err
 			}
@@ -201,20 +239,38 @@ func doCheckLevelProv(checkLevelProvArgs *checkLevelProvOpts) error {
 			return err
 		}
 	}
-	ghconnection := ghcontrol.NewGhConnection(checkLevelProvArgs.owner, checkLevelProvArgs.repository, ghcontrol.BranchToFullRef(checkLevelProvArgs.branch)).WithAuthToken(t)
-	ghconnection.Options.AllowMergeCommits = checkLevelProvArgs.allowMergeCommits
+
+	factory := vcscontrol.NewFactory()
+	hostname := ""
+	if giteaURL != "" {
+		hostname = giteaURL
+	}
+
+	// Create VCS connection for use with attestation
+	conn, err := factory.CreateConnection(checkLevelProvArgs.owner, checkLevelProvArgs.repository, checkLevelProvArgs.branch, hostname, t)
+	if err != nil {
+		return fmt.Errorf("creating VCS connection: %w", err)
+	}
+
+	// Create VCS control with the full ref for control checking
+	vcsCtrl, connErr := factory.CreateVcsControl(checkLevelProvArgs.owner, checkLevelProvArgs.repository, checkLevelProvArgs.branch, hostname, t)
+	if connErr != nil {
+		return fmt.Errorf("creating VCS control: %w", connErr)
+	}
+
+	fullRef := conn.BranchToFullRef(checkLevelProvArgs.branch)
 	ctx := context.Background()
 
 	prevCommit := checkLevelProvArgs.prevCommit
 	if prevCommit == "" {
-		prevCommit, err = ghconnection.GetPriorCommit(ctx, checkLevelProvArgs.commit)
+		prevCommit, err = conn.GetPriorCommit(ctx, checkLevelProvArgs.commit)
 		if err != nil {
 			return err
 		}
 	}
 
-	pa := attest.NewProvenanceAttestor(ghconnection, getVerifier(&checkLevelProvArgs.verifierOptions))
-	prov, err := pa.CreateSourceProvenance(ctx, checkLevelProvArgs.prevBundlePath, checkLevelProvArgs.commit, prevCommit, ghconnection.GetFullRef())
+	pa := attest.NewProvenanceAttestor(vcsCtrl, getVerifier(&checkLevelProvArgs.verifierOptions))
+	prov, err := pa.CreateSourceProvenance(ctx, checkLevelProvArgs.prevBundlePath, checkLevelProvArgs.commit, prevCommit, fullRef)
 	if err != nil {
 		return err
 	}
@@ -222,13 +278,17 @@ func doCheckLevelProv(checkLevelProvArgs *checkLevelProvOpts) error {
 	// check p against policy
 	pe := policy.NewPolicyEvaluator()
 	pe.UseLocalPolicy = checkLevelProvArgs.useLocalPolicy
+	pe.PolicyRepo = checkLevelProvArgs.policyRepo
+	pe.PolicyHostname = checkLevelProvArgs.policyHostname
+	pe.PolicyPathOwner = checkLevelProvArgs.policyPathOwner
+	pe.GiteaURL = hostname
 	verifiedLevels, policyPath, err := pe.EvaluateSourceProv(ctx, checkLevelProvArgs.GetRepository(), checkLevelProvArgs.GetBranch(), prov)
 	if err != nil {
 		return err
 	}
 
 	// create vsa
-	unsignedVsa, err := attest.CreateUnsignedSourceVsa(ghconnection.GetRepoUri(), ghconnection.GetFullRef(), checkLevelProvArgs.commit, verifiedLevels, policyPath)
+	unsignedVsa, err := attest.CreateUnsignedSourceVsa(conn.GetRepoUri(), fullRef, checkLevelProvArgs.commit, verifiedLevels, policyPath)
 	if err != nil {
 		return err
 	}

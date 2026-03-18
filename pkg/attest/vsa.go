@@ -15,13 +15,15 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/slsa-framework/source-tool/pkg/ghcontrol"
 	"github.com/slsa-framework/source-tool/pkg/slsa"
+	"github.com/slsa-framework/source-tool/pkg/vcs"
 )
 
 const (
 	VsaPredicateType = "https://slsa.dev/verification_summary/v1"
 	VsaVerifierId    = "https://github.com/slsa-framework/source-actions"
+	// AnyReference matches any reference
+	AnyReference = "*"
 )
 
 func CreateUnsignedSourceVsa(repoUri, ref, commit string, verifiedLevels slsa.SourceVerifiedLevels, policy string) (string, error) {
@@ -77,8 +79,9 @@ func createUnsignedSourceVsaAllParams(repoUri, ref, commit string, verifiedLevel
 }
 
 // Gets a VSA for the commit from git notes.
-func GetVsa(ctx context.Context, ghc *ghcontrol.GitHubConnection, verifier Verifier, commit, ref string) (*spb.Statement, *vpb.VerificationSummary, error) {
-	notes, err := ghc.GetNotesForCommit(ctx, commit)
+// Accepts both GitHub and Gitea connections via the vcs.VcsConnection interface.
+func GetVsa(ctx context.Context, conn vcs.VcsConnection, verifier Verifier, commit, ref string) (*spb.Statement, *vpb.VerificationSummary, error) {
+	notes, err := conn.GetNotesForCommit(ctx, commit)
 	if err != nil {
 		return nil, nil, fmt.Errorf("fetching commit note: %w", err)
 	}
@@ -88,7 +91,7 @@ func GetVsa(ctx context.Context, ghc *ghcontrol.GitHubConnection, verifier Verif
 		return nil, nil, nil
 	}
 
-	return getVsaFromReader(NewBundleReader(bufio.NewReader(strings.NewReader(notes)), verifier), commit, ref, ghc.GetRepoUri())
+	return getVsaFromReader(NewBundleReader(bufio.NewReader(strings.NewReader(notes)), verifier), commit, ref, conn.GetRepoUri())
 }
 
 func getVsaPred(statement *spb.Statement) (*vpb.VerificationSummary, error) {
@@ -118,7 +121,7 @@ func MatchesTypeCommitAndRef(predicateType, commit, targetRef string) StatementM
 			return false
 		}
 		for _, ref := range refs {
-			if targetRef == ghcontrol.AnyReference || ref == targetRef {
+			if targetRef == AnyReference || ref == targetRef {
 				Debugf("statement \n%v\n matches commit '%s' on ref '%s'", StatementToString(statement), commit, targetRef)
 				return true
 			}
