@@ -1,12 +1,12 @@
 module github.com/slsa-framework/source-tool
 
-go 1.25.7
+go 1.25.8
 
 require (
 	code.gitea.io/sdk/gitea v0.23.2
-	github.com/carabiner-dev/attestation v0.2.0
+	github.com/carabiner-dev/attestation v0.2.1
 	github.com/carabiner-dev/collector v0.2.8
-	github.com/carabiner-dev/signer v0.3.7
+	github.com/carabiner-dev/signer v0.4.2
 	github.com/carabiner-dev/vcslocator v0.4.0
 	github.com/fatih/color v1.18.0
 	github.com/go-git/go-billy/v6 v6.0.0-20250627091229-31e2a16eef30
@@ -29,7 +29,7 @@ require (
 	github.com/42wim/httpsig v1.2.3 // indirect
 	github.com/CycloneDX/cyclonedx-go v0.9.2 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/ProtonMail/go-crypto v1.3.0 // indirect
+	github.com/ProtonMail/go-crypto v1.4.0 // indirect
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
 	github.com/avast/retry-go/v4 v4.7.0 // indirect
 	github.com/blang/semver v3.5.1+incompatible // indirect
@@ -158,8 +158,8 @@ require (
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/oauth2 v0.33.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/term v0.40.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/term v0.41.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	golang.org/x/tools v0.39.0 // indirect

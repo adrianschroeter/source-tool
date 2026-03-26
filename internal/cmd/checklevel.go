@@ -51,6 +51,7 @@ type checkLevelOpts struct {
 	outputVsa, outputUnsignedVsa, useLocalPolicy string
 	allowMergeCommits                            bool
 	policyRepo, policyHostname, policyPathOwner  string
+	privateKey                                   string
 }
 
 func (clo *checkLevelOpts) Validate() error {
@@ -70,6 +71,7 @@ func (clo *checkLevelOpts) AddFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&clo.policyRepo, "policy-repo", "", "policy repository (owner/repo format)")
 	cmd.PersistentFlags().StringVar(&clo.policyHostname, "policy-hostname", "", "hostname to use in policy path (e.g., opensuse.org)")
 	cmd.PersistentFlags().StringVar(&clo.policyPathOwner, "policy-path-owner", "", "owner to use in policy path (e.g., slsa-framework)")
+	cmd.PersistentFlags().StringVar(&clo.privateKey, "private-key", "", "Path to a PEM-encoded private key for signing (instead of sigstore keyless signing)")
 }
 
 func addCheckLevel(parentCmd *cobra.Command) {
@@ -177,7 +179,7 @@ func doCheckLevel(cla *checkLevelOpts) error {
 
 	if cla.outputVsa != "" {
 		// This will output in the sigstore bundle format.
-		signedVsa, err := attest.Sign(unsignedVsa)
+		signedVsa, err := signData(unsignedVsa, cla.privateKey)
 		if err != nil {
 			return err
 		}

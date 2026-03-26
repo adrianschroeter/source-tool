@@ -159,6 +159,7 @@ type checkLevelProvOpts struct {
 	policyHostname       string
 	policyPathOwner      string
 	useCurrentControls   bool
+	privateKey           string
 }
 
 func (clp *checkLevelProvOpts) Validate() error {
@@ -181,6 +182,7 @@ func (clp *checkLevelProvOpts) AddFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&clp.policyHostname, "policy-hostname", "", "hostname to use in policy path (e.g., opensuse.org)")
 	cmd.PersistentFlags().StringVar(&clp.policyPathOwner, "policy-path-owner", "", "owner to use in policy path (e.g., slsa-framework)")
 	cmd.PersistentFlags().BoolVar(&clp.useCurrentControls, "use-current-controls", false, "Use current branch controls instead of push-time controls (allows retroactive claims)")
+	cmd.PersistentFlags().StringVar(&clp.privateKey, "private-key", "", "Path to a PEM-encoded private key for signing (instead of sigstore keyless signing)")
 }
 
 func addCheckLevelProv(parentCmd *cobra.Command) {
@@ -330,12 +332,12 @@ func doCheckLevelProv(checkLevelProvArgs *checkLevelProvOpts) error {
 			}
 		}()
 
-		signedProv, err := attest.Sign(string(unsignedProv))
+		signedProv, err := signData(string(unsignedProv), checkLevelProvArgs.privateKey)
 		if err != nil {
 			return err
 		}
 
-		signedVsa, err := attest.Sign(unsignedVsa)
+		signedVsa, err := signData(unsignedVsa, checkLevelProvArgs.privateKey)
 		if err != nil {
 			return err
 		}

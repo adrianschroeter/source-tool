@@ -31,6 +31,7 @@ type checkTagOptions struct {
 	policyRepo         string
 	policyHostname     string
 	policyPathOwner    string
+	privateKey         string
 }
 
 func (cto *checkTagOptions) Validate() error {
@@ -53,6 +54,7 @@ func (cto *checkTagOptions) AddFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&cto.policyRepo, "policy-repo", "", "policy repository (owner/repo format)")
 	cmd.PersistentFlags().StringVar(&cto.policyHostname, "policy-hostname", "", "hostname to use in policy path (e.g., opensuse.org)")
 	cmd.PersistentFlags().StringVar(&cto.policyPathOwner, "policy-path-owner", "", "owner to use in policy path (e.g., slsa-framework)")
+	cmd.PersistentFlags().StringVar(&cto.privateKey, "private-key", "", "Path to a PEM-encoded private key for signing (instead of sigstore keyless signing)")
 }
 
 // setGiteaPolicyDefaultsCheckTag sets default policy values when using Gitea
@@ -170,12 +172,12 @@ func doCheckTag(args *checkTagOptions) error {
 		}
 		defer f.Close() //nolint:errcheck
 
-		signedProv, err := attest.Sign(string(unsignedProv))
+		signedProv, err := signData(string(unsignedProv), args.privateKey)
 		if err != nil {
 			return err
 		}
 
-		signedVsa, err := attest.Sign(unsignedVsa)
+		signedVsa, err := signData(unsignedVsa, args.privateKey)
 		if err != nil {
 			return err
 		}
