@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/slsa-framework/source-tool/pkg/ghcontrol"
+	"github.com/slsa-framework/source-tool/pkg/giteacontrol"
 	"github.com/slsa-framework/source-tool/pkg/provenance"
 	"github.com/slsa-framework/source-tool/pkg/slsa"
 	"github.com/slsa-framework/source-tool/pkg/vcs"
@@ -53,8 +54,12 @@ func NewProvenanceAttestor(conn any, verifier Verifier) *ProvenanceAttestor {
 		// Backwards compatibility for GitHub connections
 		pa.conn = &ghControlWrapper{conn: ghConn}
 		pa.provider = &ghControlProviderWrapper{conn: ghConn}
+	} else if giteaConn, ok := conn.(*giteacontrol.GiteaConnection); ok {
+		// Gitea connection
+		pa.conn = &giteaControlWrapper{conn: giteaConn}
+		pa.provider = &giteaControlProviderWrapper{conn: giteaConn}
 	} else if c, ok := conn.(vcscontrol.Connection); ok {
-		// It's already a vcscontrol.Connection
+		// It's already a vcscontrol.Connection (including backend GiteaConnection if it implements the interface)
 		pa.conn = c
 		// Try to use the connection as provider if it implements ControlProvider
 		if p, ok := conn.(vcscontrol.ControlProvider); ok {
@@ -131,6 +136,69 @@ func (s *ghControlStatusWrapper) GetCommitPushTime() time.Time { return s.status
 func (s *ghControlStatusWrapper) GetActorLogin() string        { return s.status.ActorLogin }
 func (s *ghControlStatusWrapper) GetActivityType() string      { return s.status.ActivityType }
 func (s *ghControlStatusWrapper) GetControls() slsa.Controls   { return s.status.Controls }
+
+// giteaControlWrapper wraps a Gitea connection to implement vcscontrol.Connection
+type giteaControlWrapper struct {
+	conn *giteacontrol.GiteaConnection
+}
+
+func (g *giteaControlWrapper) VcsType() vcscontrol.VcsType { return vcscontrol.VcsTypeGitea }
+func (g *giteaControlWrapper) Owner() string               { return g.conn.Owner() }
+func (g *giteaControlWrapper) Repo() string                { return g.conn.Repo() }
+func (g *giteaControlWrapper) GetFullRef() string          { return g.conn.GetFullRef() }
+func (g *giteaControlWrapper) GetRepoUri() string          { return g.conn.GetRepoUri() }
+func (g *giteaControlWrapper) GetLatestCommit(ctx context.Context, targetBranch string) (string, error) {
+	return g.conn.GetLatestCommit(ctx, targetBranch)
+}
+func (g *giteaControlWrapper) GetPriorCommit(ctx context.Context, sha string) (string, error) {
+	return g.conn.GetPriorCommit(ctx, sha)
+}
+func (g *giteaControlWrapper) GetNotesForCommit(ctx context.Context, commit string) (string, error) {
+	return g.conn.GetNotesForCommit(ctx, commit)
+}
+func (g *giteaControlWrapper) BranchToFullRef(branch string) string {
+	// Use the local package's helper function for the backend GiteaConnection
+	// The giteacontrol package has its own BranchToFullRef
+	return giteacontrol.BranchToFullRef(branch)
+}
+func (g *giteaControlWrapper) TagToFullRef(tag string) string {
+	return giteacontrol.TagToFullRef(tag)
+}
+
+// giteaControlProviderWrapper wraps a Gitea connection to implement vcscontrol.ControlProvider
+type giteaControlProviderWrapper struct {
+	conn *giteacontrol.GiteaConnection
+}
+
+func (p *giteaControlProviderWrapper) GetBranchControls(ctx context.Context, ref string) (*slsa.Controls, error) {
+	return p.conn.GetBranchControls(ctx, ref)
+}
+
+func (p *giteaControlProviderWrapper) GetBranchControlsAtCommit(ctx context.Context, commit, ref string) (vcscontrol.ControlStatus, error) {
+	status, err := p.conn.GetBranchControlsAtCommit(ctx, commit, ref)
+	if err != nil {
+		return nil, err
+	}
+	return &giteaControlStatusWrapper{status: status}, nil
+}
+
+func (p *giteaControlProviderWrapper) GetTagControls(ctx context.Context) (vcscontrol.ControlStatus, error) {
+	status, err := p.conn.GetTagControls(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &giteaControlStatusWrapper{status: status}, nil
+}
+
+// giteaControlStatusWrapper wraps Gitea control status to implement vcscontrol.ControlStatus
+type giteaControlStatusWrapper struct {
+	status *giteacontrol.GiteaControlStatus
+}
+
+func (s *giteaControlStatusWrapper) GetCommitPushTime() time.Time { return s.status.CommitPushTime }
+func (s *giteaControlStatusWrapper) GetActorLogin() string        { return s.status.ActorLogin }
+func (s *giteaControlStatusWrapper) GetActivityType() string      { return "" }
+func (s *giteaControlStatusWrapper) GetControls() slsa.Controls   { return s.status.Controls }
 
 func GetSourceProvPred(statement *spb.Statement) (*provenance.SourceProvenancePred, error) {
 	if statement == nil {
@@ -270,6 +338,12 @@ func (pa ProvenanceAttestor) createCurrentProvenance(ctx context.Context, commit
 
 // Gets provenance for the commit from git notes.
 func (pa ProvenanceAttestor) GetProvenance(ctx context.Context, commit, ref string) (*spb.Statement, *provenance.SourceProvenancePred, error) {
+	// Check if connection is nil
+	if pa.conn == nil {
+		Debugf("connection is nil, cannot get provenance for commit %s", commit)
+		return nil, nil, nil
+	}
+
 	notes, err := pa.conn.GetNotesForCommit(ctx, commit)
 	if notes == "" {
 		Debugf("didn't find notes for commit %s", commit)

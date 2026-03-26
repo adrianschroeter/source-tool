@@ -1,10 +1,10 @@
-
 package gitea
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -12,6 +12,7 @@ import (
 
 	"code.gitea.io/sdk/gitea"
 
+	"github.com/slsa-framework/source-tool/pkg/attest"
 	"github.com/slsa-framework/source-tool/pkg/provenance"
 	"github.com/slsa-framework/source-tool/pkg/slsa"
 	"github.com/slsa-framework/source-tool/pkg/sourcetool/models"
@@ -96,6 +97,25 @@ func (b *Backend) GetBranchControlsAtCommit(ctx context.Context, r *models.Repos
 	activeControls, err := b.getBranchControls(ctx, ghc, branch.FullRef())
 	if err != nil {
 		return nil, fmt.Errorf("checking status: %w", err)
+	}
+
+	// Check for PROVENANCE_AVAILABLE by trying to fetch attestation notes
+	// for the specific commit that was passed in (not the latest commit)
+	attestor := attest.NewProvenanceAttestor(
+		ghc, attest.GetDefaultVerifier(),
+	)
+
+	// Fetch the attestation. If found, then add the control:
+	attestation, _, err := attestor.GetProvenance(ctx, commit.SHA, branch.FullRef())
+	if err != nil {
+		log.Printf("Error checking for provenance: %v", err)
+	}
+	if attestation != nil {
+		activeControls.AddControl(&provenance.Control{
+			Name: slsa.ProvenanceAvailable.String(),
+		})
+	} else {
+		log.Printf("No provenance attestation found on %s", commit.SHA)
 	}
 
 	status := slsa.NewControlSetStatus()

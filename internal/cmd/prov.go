@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -75,6 +76,13 @@ func addProv(parentCmd *cobra.Command) {
 }
 
 func doProv(opts *provOptions) error {
+	// Check if GITEA_TOKEN is set when using Gitea
+	if giteaURL != "" {
+		if token := os.Getenv("GITEA_TOKEN"); token == "" {
+			return fmt.Errorf("GITEA_TOKEN environment variable is not set - this is required when using --gitea_url parameter")
+		}
+	}
+
 	factory := vcscontrol.NewFactory()
 	hostname := ""
 	if giteaURL != "" {

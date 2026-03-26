@@ -117,8 +117,13 @@ func (po *pushOptions) GetCollectorAgent(opts commitOptions, token string) (*col
 }
 
 // setGiteaPolicyDefaultsCheckLevelProv sets default policy values when using Gitea
-func setGiteaPolicyDefaultsCheckLevelProv(opts *checkLevelProvOpts) {
+func setGiteaPolicyDefaultsCheckLevelProv(opts *checkLevelProvOpts) error {
 	if giteaURL != "" {
+		// Check if GITEA_TOKEN is set
+		if token := os.Getenv("GITEA_TOKEN"); token == "" {
+			return fmt.Errorf("GITEA_TOKEN environment variable is not set - this is required when using --gitea_url parameter")
+		}
+
 		if opts.policyRepo == "" {
 			opts.policyRepo = "obs/slsa"
 		}
@@ -143,6 +148,7 @@ func setGiteaPolicyDefaultsCheckLevelProv(opts *checkLevelProvOpts) {
 			}
 		}
 	}
+	return nil
 }
 
 type checkLevelProvOpts struct {
@@ -218,7 +224,9 @@ and pushed to its remote (--push=note).
 			}
 
 			// Set Gitea policy defaults
-			setGiteaPolicyDefaultsCheckLevelProv(opts)
+			if err := setGiteaPolicyDefaultsCheckLevelProv(opts); err != nil {
+				return err
+			}
 
 			if err := opts.EnsureDefaults(); err != nil {
 				return err

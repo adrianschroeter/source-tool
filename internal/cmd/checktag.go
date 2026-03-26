@@ -58,8 +58,13 @@ func (cto *checkTagOptions) AddFlags(cmd *cobra.Command) {
 }
 
 // setGiteaPolicyDefaultsCheckTag sets default policy values when using Gitea
-func setGiteaPolicyDefaultsCheckTag(opts *checkTagOptions) {
+func setGiteaPolicyDefaultsCheckTag(opts *checkTagOptions) error {
 	if giteaURL != "" {
+		// Check if GITEA_TOKEN is set
+		if token := os.Getenv("GITEA_TOKEN"); token == "" {
+			return fmt.Errorf("GITEA_TOKEN environment variable is not set - this is required when using --gitea_url parameter")
+		}
+
 		if opts.policyRepo == "" {
 			opts.policyRepo = "obs/slsa"
 		}
@@ -84,6 +89,7 @@ func setGiteaPolicyDefaultsCheckTag(opts *checkTagOptions) {
 			}
 		}
 	}
+	return nil
 }
 
 func addCheckTag(parentCmd *cobra.Command) {
@@ -105,7 +111,9 @@ func addCheckTag(parentCmd *cobra.Command) {
 			if err := opts.repoOptions.Validate(); err != nil {
 				return err
 			}
-			setGiteaPolicyDefaultsCheckTag(opts)
+			if err := setGiteaPolicyDefaultsCheckTag(opts); err != nil {
+				return err
+			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {

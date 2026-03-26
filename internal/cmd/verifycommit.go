@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -97,6 +98,13 @@ func addVerifyCommit(cmd *cobra.Command) {
 }
 
 func doVerifyCommit(opts *verifyCommitOptions) error {
+	// Check if GITEA_TOKEN is set when using Gitea
+	if giteaURL != "" {
+		if token := os.Getenv("GITEA_TOKEN"); token == "" {
+			return fmt.Errorf("GITEA_TOKEN environment variable is not set - this is required when using --gitea_url parameter")
+		}
+	}
+
 	// Use the unified vcscontrol factory
 	factory := vcscontrol.NewFactory()
 	hostname := ""

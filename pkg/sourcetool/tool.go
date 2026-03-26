@@ -76,6 +76,30 @@ func (t *Tool) GetBranchControls(ctx context.Context, r *models.Repository, bran
 	return controls, err
 }
 
+// GetBranchControlsAtCommit returns the controls that were enabled at a specific commit.
+func (t *Tool) GetBranchControlsAtCommit(ctx context.Context, r *models.Repository, branch *models.Branch, commit *models.Commit) (*slsa.ControlSetStatus, error) {
+	backend, err := t.impl.GetVcsBackend(r)
+	if err != nil {
+		return nil, fmt.Errorf("getting VCS backend: %w", err)
+	}
+
+	// Get the control status at the specific commit
+	controls, err := t.impl.GetBranchControlsAtCommit(ctx, backend, r, branch, commit)
+	if err != nil {
+		return nil, fmt.Errorf("getting branch controls at commit: %w", err)
+	}
+
+	// We also abstract the repository policy as a control to report its status
+	status, err := t.impl.GetPolicyStatus(ctx, t.Authenticator, &t.Options, r)
+	if err != nil {
+		return nil, fmt.Errorf("reading policy status: %w", err)
+	}
+
+	controls.Controls = append(controls.Controls, *status)
+
+	return controls, err
+}
+
 // OnboardRepository configures a repository to set up the required controls
 // to meet SLSA Source L3.
 func (t *Tool) OnboardRepository(ctx context.Context, repo *models.Repository, branches []*models.Branch) error {

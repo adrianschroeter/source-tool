@@ -18,8 +18,13 @@ import (
 )
 
 // setGiteaPolicyDefaults sets default policy values when using Gitea
-func setGiteaPolicyDefaults(opts *checkLevelOpts) {
+func setGiteaPolicyDefaults(opts *checkLevelOpts) error {
 	if giteaURL != "" {
+		// Check if GITEA_TOKEN is set
+		if token := os.Getenv("GITEA_TOKEN"); token == "" {
+			return fmt.Errorf("GITEA_TOKEN environment variable is not set - this is required when using --gitea_url parameter")
+		}
+
 		if opts.policyRepo == "" {
 			opts.policyRepo = "obs/slsa"
 		}
@@ -44,6 +49,7 @@ func setGiteaPolicyDefaults(opts *checkLevelOpts) {
 			}
 		}
 	}
+	return nil
 }
 
 type checkLevelOpts struct {
@@ -52,6 +58,7 @@ type checkLevelOpts struct {
 	allowMergeCommits                            bool
 	policyRepo, policyHostname, policyPathOwner  string
 	privateKey                                   string
+	useCurrentControls                           bool
 }
 
 func (clo *checkLevelOpts) Validate() error {
@@ -72,6 +79,7 @@ func (clo *checkLevelOpts) AddFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&clo.policyHostname, "policy-hostname", "", "hostname to use in policy path (e.g., opensuse.org)")
 	cmd.PersistentFlags().StringVar(&clo.policyPathOwner, "policy-path-owner", "", "owner to use in policy path (e.g., slsa-framework)")
 	cmd.PersistentFlags().StringVar(&clo.privateKey, "private-key", "", "Path to a PEM-encoded private key for signing (instead of sigstore keyless signing)")
+	cmd.PersistentFlags().BoolVar(&clo.useCurrentControls, "use-current-controls", false, "Use current branch controls instead of push-time controls (allows retroactive claims)")
 }
 
 func addCheckLevel(parentCmd *cobra.Command) {
@@ -98,7 +106,9 @@ This is meant to be run within the corresponding GitHub Actions workflow.`,
 			}
 
 			// Set Gitea policy defaults
-			setGiteaPolicyDefaults(&opts)
+			if err := setGiteaPolicyDefaults(&opts); err != nil {
+				return err
+			}
 
 			if err := opts.EnsureDefaults(); err != nil {
 				return err
@@ -161,6 +171,7 @@ func doCheckLevel(cla *checkLevelOpts) error {
 	pe.PolicyHostname = cla.policyHostname
 	pe.PolicyPathOwner = cla.policyPathOwner
 	pe.GiteaURL = hostname
+	pe.SkipSinceValidation = cla.useCurrentControls
 	verifiedLevels, policyPath, evalErr := pe.EvaluateControl(ctx, cla.GetRepository(), cla.GetBranch(), controlStatus)
 	if evalErr != nil {
 		return evalErr

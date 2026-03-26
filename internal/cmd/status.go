@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/fatih/color"
@@ -16,6 +17,7 @@ import (
 	"github.com/slsa-framework/source-tool/pkg/policy"
 	"github.com/slsa-framework/source-tool/pkg/slsa"
 	"github.com/slsa-framework/source-tool/pkg/sourcetool"
+	sourcetoolmodels "github.com/slsa-framework/source-tool/pkg/sourcetool/models"
 )
 
 var (
@@ -96,6 +98,11 @@ sourcetool status myorg/myrepo@mybranch
 
 			// If using Gitea, set default policy repo and hostname
 			if giteaURL != "" {
+				// Check if GITEA_TOKEN is set
+				if token := os.Getenv("GITEA_TOKEN"); token == "" {
+					return fmt.Errorf("GITEA_TOKEN environment variable is not set - this is required when using --gitea_url parameter")
+				}
+
 				if opts.policyRepo == "" {
 					opts.policyRepo = "obs/slsa"
 				}
@@ -156,9 +163,24 @@ sourcetool status myorg/myrepo@mybranch
 			}
 
 			// Get the active repository controls
-			controls, err := srctool.GetBranchControls(cmd.Context(), opts.GetRepository(), opts.GetBranch())
-			if err != nil {
-				return fmt.Errorf("fetching active controls: %w", err)
+			// Use the commit-specific method if a commit is provided
+			var controls *slsa.ControlSetStatus
+			var controlsErr error
+
+			// Get the repository and branch
+			repo := opts.GetRepository()
+			branch := opts.GetBranch()
+
+			if opts.commit != "" {
+				// Use GetBranchControlsAtCommit to check provenance for the specific commit
+				commit := &sourcetoolmodels.Commit{SHA: opts.commit}
+				controls, controlsErr = srctool.GetBranchControlsAtCommit(cmd.Context(), repo, branch, commit)
+			} else {
+				controls, controlsErr = srctool.GetBranchControls(cmd.Context(), repo, branch)
+			}
+
+			if controlsErr != nil {
+				return fmt.Errorf("fetching active controls: %w", controlsErr)
 			}
 
 			// Compute the maximum level possible:
