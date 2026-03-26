@@ -6,7 +6,6 @@ package giteacontrol
 import (
 	"context"
 	"fmt"
-	"path"
 	"strings"
 	"time"
 
@@ -110,8 +109,8 @@ func (gc *GiteaConnection) GetBranchControls(ctx context.Context, ref string) (*
 }
 
 // computeTagHygieneControl checks if the Gitea repository has tag protection
-// rules that cover all tags. A tag protection is considered valid for tag hygiene
-// if it has a pattern that matches all tags (like "*").
+// rules. If any tag protections are configured, we assume tag hygiene is enabled.
+// The oldest protection is used for the Since timestamp.
 func (gc *GiteaConnection) computeTagHygieneControl(ctx context.Context) (*provenance.Control, error) {
 	client, err := gc.GetClient()
 	if err != nil {
@@ -128,24 +127,17 @@ func (gc *GiteaConnection) computeTagHygieneControl(ctx context.Context) (*prove
 		return nil, fmt.Errorf("listing tag protections: %w", err)
 	}
 
-	// Find the oldest tag protection whose pattern matches all tags
-	var oldest *gitea.TagProtection
-	for _, tp := range tagProtections {
-		matched, err := path.Match(tp.NamePattern, "v1.0.0") // Test with a sample tag
-		if err != nil {
-			// Invalid pattern, skip it
-			continue
-		}
-		// Check if pattern would match typical version tags (glob pattern)
-		if matched || tp.NamePattern == "*" || tp.NamePattern == "v*" {
-			if oldest == nil || tp.Created.Before(oldest.Created) {
-				oldest = tp
-			}
-		}
+	// If there are any tag protections configured, tag hygiene is enabled
+	// Find the oldest one for the Since timestamp
+	if len(tagProtections) == 0 {
+		return nil, nil
 	}
 
-	if oldest == nil {
-		return nil, nil
+	oldest := tagProtections[0]
+	for _, tp := range tagProtections[1:] {
+		if tp.Created.Before(oldest.Created) {
+			oldest = tp
+		}
 	}
 
 	return &provenance.Control{

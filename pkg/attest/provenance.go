@@ -28,7 +28,8 @@ import (
 )
 
 type ProvenanceAttestorOptions struct {
-	VsaRetries uint8
+	VsaRetries         uint8
+	UseCurrentControls bool // If true, use current branch controls instead of push-time controls
 }
 
 type ProvenanceAttestor struct {
@@ -61,6 +62,12 @@ func NewProvenanceAttestor(conn any, verifier Verifier) *ProvenanceAttestor {
 		}
 	}
 
+	return pa
+}
+
+// WithOptions returns a new ProvenanceAttestor with the given options applied
+func (pa *ProvenanceAttestor) WithOptions(opts ProvenanceAttestorOptions) *ProvenanceAttestor {
+	pa.Options = opts
 	return pa
 }
 
@@ -214,9 +221,27 @@ func addPredToStatement(provPred any, predicateType, commit string) (*spb.Statem
 
 // Create provenance for the current commit without any context from the previous provenance (if any).
 func (pa ProvenanceAttestor) createCurrentProvenance(ctx context.Context, commit, prevCommit, ref string) (*spb.Statement, error) {
-	controlStatus, err := pa.provider.GetBranchControlsAtCommit(ctx, commit, ref)
-	if err != nil {
-		return nil, err
+	var controls slsa.Controls
+	var actorLogin, activityType string
+
+	if pa.Options.UseCurrentControls {
+		// Use current branch controls (not push-time controls)
+		currentControls, err := pa.provider.GetBranchControls(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		controls = *currentControls
+		actorLogin = ""
+		activityType = ""
+	} else {
+		// Use push-time controls (what was enabled when commit was pushed)
+		controlStatus, err := pa.provider.GetBranchControlsAtCommit(ctx, commit, ref)
+		if err != nil {
+			return nil, err
+		}
+		controls = controlStatus.GetControls()
+		actorLogin = controlStatus.GetActorLogin()
+		activityType = controlStatus.GetActivityType()
 	}
 
 	curTime := time.Now()
@@ -224,11 +249,11 @@ func (pa ProvenanceAttestor) createCurrentProvenance(ctx context.Context, commit
 	var curProvPred provenance.SourceProvenancePred
 	curProvPred.PrevCommit = prevCommit
 	curProvPred.RepoUri = pa.conn.GetRepoUri()
-	curProvPred.Actor = controlStatus.GetActorLogin()
-	curProvPred.ActivityType = controlStatus.GetActivityType()
+	curProvPred.Actor = actorLogin
+	curProvPred.ActivityType = activityType
 	curProvPred.Branch = ref
 	curProvPred.CreatedOn = timestamppb.New(curTime)
-	curProvPred.Controls = controlStatus.GetControls()
+	curProvPred.Controls = controls
 
 	// At the very least provenance is available starting now. :)
 	// ... indeed, but don't set the `since`` date because doing so breaks

@@ -553,10 +553,8 @@ func ComputeEligibleSince(controls slsa.Controls, level slsa.SlsaSourceLevel) (*
 	return &newestTime, nil
 }
 
-// Every function that determines properties to include in the result & VSA implements this interface.
-type computePolicyResult func(*ProtectedBranch, *ProtectedTag, slsa.Controls) ([]slsa.ControlName, error)
-
-func computeSlsaLevel(branchPolicy *ProtectedBranch, _ *ProtectedTag, controls slsa.Controls) ([]slsa.ControlName, error) {
+// computeSlsaLevel returns SLSA level if eligible, checking Since validation unless skipSince is true.
+func computeSlsaLevel(branchPolicy *ProtectedBranch, _ *ProtectedTag, controls slsa.Controls, skipSince bool) ([]slsa.ControlName, error) {
 	eligibleLevel := ComputeEligibleSlsaLevel(controls)
 
 	if !slsa.IsLevelHigherOrEqualTo(eligibleLevel, slsa.SlsaSourceLevel(branchPolicy.GetTargetSlsaSourceLevel())) {
@@ -576,14 +574,15 @@ func computeSlsaLevel(branchPolicy *ProtectedBranch, _ *ProtectedTag, controls s
 		return []slsa.ControlName{}, fmt.Errorf("policy sets target level %s, but cannot compute when controls made it eligible for that level", branchPolicy.GetTargetSlsaSourceLevel())
 	}
 
-	if branchPolicy.GetSince().AsTime().Before(*eligibleSince) {
+	// Skip Since validation when skipSince is true (e.g., when using current controls)
+	if !skipSince && branchPolicy.GetSince().AsTime().Before(*eligibleSince) {
 		return []slsa.ControlName{}, fmt.Errorf("policy sets target level %s since %v, but it has only been eligible for that level since %v", branchPolicy.GetTargetSlsaSourceLevel(), branchPolicy.GetSince().AsTime(), eligibleSince)
 	}
 
 	return []slsa.ControlName{slsa.ControlName(branchPolicy.GetTargetSlsaSourceLevel())}, nil
 }
 
-func computeReviewEnforced(branchPolicy *ProtectedBranch, _ *ProtectedTag, controls slsa.Controls) ([]slsa.ControlName, error) {
+func computeReviewEnforced(branchPolicy *ProtectedBranch, _ *ProtectedTag, controls slsa.Controls, skipSince bool) ([]slsa.ControlName, error) {
 	if !branchPolicy.GetRequireReview() {
 		return []slsa.ControlName{}, nil
 	}
@@ -593,14 +592,15 @@ func computeReviewEnforced(branchPolicy *ProtectedBranch, _ *ProtectedTag, contr
 		return []slsa.ControlName{}, fmt.Errorf("policy requires review, but that control is not enabled")
 	}
 
-	if branchPolicy.GetSince().AsTime().Before(reviewControl.GetSince().AsTime()) {
+	// Skip Since validation when skipSince is true (e.g., when using current controls)
+	if !skipSince && branchPolicy.GetSince().AsTime().Before(reviewControl.GetSince().AsTime()) {
 		return []slsa.ControlName{}, fmt.Errorf("policy requires review since %v, but that control has only been enabled since %v", branchPolicy.GetSince(), reviewControl.GetSince())
 	}
 
 	return []slsa.ControlName{slsa.ReviewEnforced}, nil
 }
 
-func computeTagHygiene(_ *ProtectedBranch, tagPolicy *ProtectedTag, controls slsa.Controls) ([]slsa.ControlName, error) {
+func computeTagHygiene(_ *ProtectedBranch, tagPolicy *ProtectedTag, controls slsa.Controls, skipSince bool) ([]slsa.ControlName, error) {
 	if tagPolicy == nil {
 		// There is no tag policy, so the control isn't met, but it's not an error.
 		return []slsa.ControlName{}, nil
@@ -615,14 +615,15 @@ func computeTagHygiene(_ *ProtectedBranch, tagPolicy *ProtectedTag, controls sls
 		return []slsa.ControlName{}, fmt.Errorf("policy requires tag hygiene, but that control is not enabled")
 	}
 
-	if tagPolicy.GetSince().AsTime().Before(tagHygiene.GetSince().AsTime()) {
+	// Skip Since validation when skipSince is true (e.g., when using current controls)
+	if !skipSince && tagPolicy.GetSince().AsTime().Before(tagHygiene.GetSince().AsTime()) {
 		return []slsa.ControlName{}, fmt.Errorf("policy requires tag hygiene since %v, but that control has only been enabled since %v", tagPolicy.GetSince(), tagHygiene.GetSince())
 	}
 
 	return []slsa.ControlName{slsa.TagHygiene}, nil
 }
 
-func computeOrgControls(branchPolicy *ProtectedBranch, _ *ProtectedTag, controls slsa.Controls) ([]slsa.ControlName, error) {
+func computeOrgControls(branchPolicy *ProtectedBranch, _ *ProtectedTag, controls slsa.Controls, skipSince bool) ([]slsa.ControlName, error) {
 	controlNames := []slsa.ControlName{}
 	for _, rc := range branchPolicy.GetOrgStatusCheckControls() {
 		if !strings.HasPrefix(rc.GetPropertyName(), slsa.AllowedOrgPropPrefix) {
@@ -631,7 +632,8 @@ func computeOrgControls(branchPolicy *ProtectedBranch, _ *ProtectedTag, controls
 
 		control := controls.GetControl(ghcontrol.CheckNameToControlName(rc.GetCheckName()))
 		if control != nil {
-			if rc.GetSince().AsTime().Before(control.GetSince().AsTime()) {
+			// Skip Since validation when skipSince is true (e.g., when using current controls)
+			if !skipSince && rc.GetSince().AsTime().Before(control.GetSince().AsTime()) {
 				return []slsa.ControlName{}, fmt.Errorf("policy requires check '%v' since %v, but that control has only been enabled since %v", rc.GetCheckName(), rc.GetSince(), control.GetSince())
 			}
 			controlNames = append(controlNames, slsa.ControlName(rc.GetPropertyName()))
@@ -643,18 +645,32 @@ func computeOrgControls(branchPolicy *ProtectedBranch, _ *ProtectedTag, controls
 }
 
 // Returns a list of controls to include in the vsa's 'verifiedLevels' field when creating a VSA for a branch.
-func evaluateBranchControls(branchPolicy *ProtectedBranch, tagPolicy *ProtectedTag, controls slsa.Controls) (slsa.SourceVerifiedLevels, error) {
-	policyComputers := []computePolicyResult{computeSlsaLevel, computeReviewEnforced, computeTagHygiene, computeOrgControls}
-
+func evaluateBranchControls(branchPolicy *ProtectedBranch, tagPolicy *ProtectedTag, controls slsa.Controls, skipSinceValidation bool) (slsa.SourceVerifiedLevels, error) {
 	verifiedLevels := slsa.SourceVerifiedLevels{}
 
-	for _, pc := range policyComputers {
-		computedControls, err := pc(branchPolicy, tagPolicy, controls)
-		if err != nil {
-			return slsa.SourceVerifiedLevels{}, fmt.Errorf("error computing branch controls: %w", err)
-		}
-		verifiedLevels = append(verifiedLevels, computedControls...)
+	computedControls, err := computeSlsaLevel(branchPolicy, tagPolicy, controls, skipSinceValidation)
+	if err != nil {
+		return slsa.SourceVerifiedLevels{}, fmt.Errorf("error computing branch controls: %w", err)
 	}
+	verifiedLevels = append(verifiedLevels, computedControls...)
+
+	computedControls, err = computeReviewEnforced(branchPolicy, tagPolicy, controls, skipSinceValidation)
+	if err != nil {
+		return slsa.SourceVerifiedLevels{}, fmt.Errorf("error computing branch controls: %w", err)
+	}
+	verifiedLevels = append(verifiedLevels, computedControls...)
+
+	computedControls, err = computeTagHygiene(branchPolicy, tagPolicy, controls, skipSinceValidation)
+	if err != nil {
+		return slsa.SourceVerifiedLevels{}, fmt.Errorf("error computing branch controls: %w", err)
+	}
+	verifiedLevels = append(verifiedLevels, computedControls...)
+
+	computedControls, err = computeOrgControls(branchPolicy, tagPolicy, controls, skipSinceValidation)
+	if err != nil {
+		return slsa.SourceVerifiedLevels{}, fmt.Errorf("error computing branch controls: %w", err)
+	}
+	verifiedLevels = append(verifiedLevels, computedControls...)
 
 	return verifiedLevels, nil
 }
@@ -666,7 +682,13 @@ func evaluateTagProv(tagPolicy *ProtectedTag, tagProvPred *provenance.TagProvena
 	// As long as all the controls for tag protection are currently in force then we'll
 	// include the verifiedLevels.
 
-	computedControls, err := computeTagHygiene(nil, tagPolicy, tagProvPred.GetControls())
+	// Create slsa.Controls from tagProvPred.GetControls()
+	controls := slsa.Controls{}
+	for _, c := range tagProvPred.GetControls() {
+		controls = append(controls, c)
+	}
+
+	computedControls, err := computeTagHygiene(nil, tagPolicy, controls, false)
 	if err != nil {
 		return slsa.SourceVerifiedLevels{}, fmt.Errorf("error computing tag immutability enforced: %w", err)
 	}
@@ -723,6 +745,10 @@ type PolicyEvaluator struct {
 	// PolicyPathOwner is the owner to use in the policy path
 	// If not set, the default (slsa-framework) will be used
 	PolicyPathOwner string
+	// SkipSinceValidation skips the Since timestamp validation when evaluating controls.
+	// This is useful when using current controls instead of push-time controls,
+	// as current controls may not have been enabled since the policy's since date.
+	SkipSinceValidation bool
 }
 
 func NewPolicyEvaluator() *PolicyEvaluator {
@@ -759,7 +785,7 @@ func (pe *PolicyEvaluator) EvaluateControl(ctx context.Context, repo *models.Rep
 		return slsa.SourceVerifiedLevels{slsa.ControlName(slsa.SlsaSourceLevel1)}, policyPath, nil
 	}
 
-	verifiedLevels, err := evaluateBranchControls(branchPolicy, rp.GetProtectedTag(), controlStatus.GetControls())
+	verifiedLevels, err := evaluateBranchControls(branchPolicy, rp.GetProtectedTag(), controlStatus.GetControls(), pe.SkipSinceValidation)
 	if err != nil {
 		return verifiedLevels, policyPath, fmt.Errorf("error evaluating policy %s: %w", policyPath, err)
 	}
@@ -784,7 +810,13 @@ func (pe *PolicyEvaluator) EvaluateSourceProv(ctx context.Context, repo *models.
 		policyPath = "DEFAULT"
 	}
 
-	verifiedLevels, err := evaluateBranchControls(branchPolicy, rp.GetProtectedTag(), provPred.GetControls())
+	// Convert []*provenance.Control to slsa.Controls
+	controls := slsa.Controls{}
+	for _, c := range provPred.GetControls() {
+		controls = append(controls, c)
+	}
+
+	verifiedLevels, err := evaluateBranchControls(branchPolicy, rp.GetProtectedTag(), controls, pe.SkipSinceValidation)
 	if err != nil {
 		return slsa.SourceVerifiedLevels{}, policyPath, fmt.Errorf("error evaluating policy %s: %w", policyPath, err)
 	}

@@ -865,7 +865,7 @@ func TestEvaluateBranchControls(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotLevels, err := evaluateBranchControls(tt.branchPolicy, tt.tagPolicy, tt.controls)
+			gotLevels, err := evaluateBranchControls(tt.branchPolicy, tt.tagPolicy, tt.controls, false)
 
 			if tt.expectError {
 				if err == nil {
@@ -959,7 +959,7 @@ func TestComputeTagHygiene(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotControls, err := computeTagHygiene(nil, tt.tagPolicy, tt.controls)
+			gotControls, err := computeTagHygiene(nil, tt.tagPolicy, tt.controls, false)
 
 			if tt.expectError {
 				if err == nil {
@@ -1034,7 +1034,7 @@ func TestComputeReviewEnforced(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotControls, err := computeReviewEnforced(tt.branchPolicy, nil, tt.controls)
+			gotControls, err := computeReviewEnforced(tt.branchPolicy, nil, tt.controls, false)
 
 			if tt.expectError {
 				if err == nil {
@@ -1128,7 +1128,7 @@ func TestComputeOrgControls(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			branchPolicy := ProtectedBranch{OrgStatusCheckControls: tt.orgCheckPolicies}
-			gotControls, err := computeOrgControls(&branchPolicy, nil, tt.controls)
+			gotControls, err := computeOrgControls(&branchPolicy, nil, tt.controls, false)
 
 			if tt.expectError {
 				if err == nil {
@@ -1254,7 +1254,7 @@ func TestComputeSlsaLevel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotLevels, err := computeSlsaLevel(tt.branchPolicy, nil, tt.controls)
+			gotLevels, err := computeSlsaLevel(tt.branchPolicy, nil, tt.controls, false)
 
 			if tt.expectError {
 				if err == nil {

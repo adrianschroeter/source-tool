@@ -158,6 +158,7 @@ type checkLevelProvOpts struct {
 	policyRepo           string
 	policyHostname       string
 	policyPathOwner      string
+	useCurrentControls   bool
 }
 
 func (clp *checkLevelProvOpts) Validate() error {
@@ -179,6 +180,7 @@ func (clp *checkLevelProvOpts) AddFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&clp.policyRepo, "policy-repo", "", "policy repository (owner/repo format)")
 	cmd.PersistentFlags().StringVar(&clp.policyHostname, "policy-hostname", "", "hostname to use in policy path (e.g., opensuse.org)")
 	cmd.PersistentFlags().StringVar(&clp.policyPathOwner, "policy-path-owner", "", "owner to use in policy path (e.g., slsa-framework)")
+	cmd.PersistentFlags().BoolVar(&clp.useCurrentControls, "use-current-controls", false, "Use current branch controls instead of push-time controls (allows retroactive claims)")
 }
 
 func addCheckLevelProv(parentCmd *cobra.Command) {
@@ -270,6 +272,9 @@ func doCheckLevelProv(checkLevelProvArgs *checkLevelProvOpts) error {
 	}
 
 	pa := attest.NewProvenanceAttestor(vcsCtrl, getVerifier(&checkLevelProvArgs.verifierOptions))
+	pa = pa.WithOptions(attest.ProvenanceAttestorOptions{
+		UseCurrentControls: checkLevelProvArgs.useCurrentControls,
+	})
 	prov, err := pa.CreateSourceProvenance(ctx, checkLevelProvArgs.prevBundlePath, checkLevelProvArgs.commit, prevCommit, fullRef)
 	if err != nil {
 		return err
@@ -282,6 +287,7 @@ func doCheckLevelProv(checkLevelProvArgs *checkLevelProvOpts) error {
 	pe.PolicyHostname = checkLevelProvArgs.policyHostname
 	pe.PolicyPathOwner = checkLevelProvArgs.policyPathOwner
 	pe.GiteaURL = hostname
+	pe.SkipSinceValidation = checkLevelProvArgs.useCurrentControls
 	verifiedLevels, policyPath, err := pe.EvaluateSourceProv(ctx, checkLevelProvArgs.GetRepository(), checkLevelProvArgs.GetBranch(), prov)
 	if err != nil {
 		return err
