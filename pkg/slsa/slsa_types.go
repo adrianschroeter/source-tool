@@ -194,8 +194,12 @@ func (cs *ControlSetStatus) GetActiveControls() *Controls {
 	}
 	for _, c := range cs.Controls {
 		if c.State == StateActive {
+			var since *timestamppb.Timestamp
+			if c.Since != nil {
+				since = timestamppb.New(*c.Since)
+			}
 			ret.AddControl(&provenance.Control{
-				Name: c.Name.String(), Since: timestamppb.New(*c.Since),
+				Name: c.Name.String(), Since: since,
 			})
 		}
 	}
