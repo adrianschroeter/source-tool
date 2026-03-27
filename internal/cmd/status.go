@@ -13,6 +13,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/slsa-framework/source-tool/pkg/attest"
 	"github.com/slsa-framework/source-tool/pkg/ghcontrol"
 	"github.com/slsa-framework/source-tool/pkg/policy"
 	"github.com/slsa-framework/source-tool/pkg/slsa"
@@ -28,6 +29,7 @@ var (
 // statusOptions
 type statusOptions struct {
 	commitOptions
+	verifierOptions
 	policyRepo      string
 	policyHostname  string
 	policyPathOwner string
@@ -37,6 +39,7 @@ type statusOptions struct {
 func (so *statusOptions) Validate() error {
 	errs := []error{} //nolint:prealloc
 	errs = append(errs, so.commitOptions.Validate())
+	errs = append(errs, so.verifierOptions.Validate())
 
 	return errors.Join(errs...)
 }
@@ -44,6 +47,7 @@ func (so *statusOptions) Validate() error {
 // AddFlags adds the subcommands flags
 func (so *statusOptions) AddFlags(cmd *cobra.Command) {
 	so.commitOptions.AddFlags(cmd)
+	so.verifierOptions.AddFlags(cmd)
 	cmd.PersistentFlags().StringVar(
 		&so.policyRepo, "policy-repo", "", "policy repository (owner/repo format)",
 	)
@@ -147,6 +151,18 @@ sourcetool status myorg/myrepo@mybranch
 				return err
 			}
 
+			// Create verifier options from verifierOptions
+			verifierOpts := attest.DefaultVerifierOptions
+			if opts.expectedIssuer != "" {
+				verifierOpts.ExpectedIssuer = opts.expectedIssuer
+			}
+			if opts.expectedSan != "" {
+				verifierOpts.ExpectedSan = opts.expectedSan
+			}
+			if opts.publicKey != "" {
+				verifierOpts.PublicKey = opts.publicKey
+			}
+
 			// Create a new sourcetool object
 			policyRepo := opts.policyRepo
 			if policyRepo == "" {
@@ -157,6 +173,7 @@ sourcetool status myorg/myrepo@mybranch
 				sourcetool.WithPolicyRepo(policyRepo),
 				sourcetool.WithPolicyHostname(opts.policyHostname),
 				sourcetool.WithPolicyPathOwner(opts.policyPathOwner),
+				sourcetool.WithVerifierOptions(verifierOpts),
 			)
 			if err != nil {
 				return err

@@ -73,6 +73,20 @@ type FakeAuthenticatorImplementation struct {
 		result1 string
 		result2 error
 	}
+	readTokenFromFileStub        func(string, string) (string, error)
+	readTokenFromFileMutex       sync.RWMutex
+	readTokenFromFileArgsForCall []struct {
+		arg1 string
+		arg2 string
+	}
+	readTokenFromFileReturns struct {
+		result1 string
+		result2 error
+	}
+	readTokenFromFileReturnsOnCall map[int]struct {
+		result1 string
+		result2 error
+	}
 	requestDeviceCodeStub        func(context.Context) (*auth.DeviceCodeResponse, error)
 	requestDeviceCodeMutex       sync.RWMutex
 	requestDeviceCodeArgsForCall []struct {
@@ -394,6 +408,71 @@ func (fake *FakeAuthenticatorImplementation) ReadTokenReturnsOnCall(i int, resul
 		})
 	}
 	fake.readTokenReturnsOnCall[i] = struct {
+		result1 string
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAuthenticatorImplementation) readTokenFromFile(arg1 string, arg2 string) (string, error) {
+	fake.readTokenFromFileMutex.Lock()
+	ret, specificReturn := fake.readTokenFromFileReturnsOnCall[len(fake.readTokenFromFileArgsForCall)]
+	fake.readTokenFromFileArgsForCall = append(fake.readTokenFromFileArgsForCall, struct {
+		arg1 string
+		arg2 string
+	}{arg1, arg2})
+	stub := fake.readTokenFromFileStub
+	fakeReturns := fake.readTokenFromFileReturns
+	fake.recordInvocation("readTokenFromFile", []interface{}{arg1, arg2})
+	fake.readTokenFromFileMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAuthenticatorImplementation) ReadTokenFromFileCallCount() int {
+	fake.readTokenFromFileMutex.RLock()
+	defer fake.readTokenFromFileMutex.RUnlock()
+	return len(fake.readTokenFromFileArgsForCall)
+}
+
+func (fake *FakeAuthenticatorImplementation) ReadTokenFromFileCalls(stub func(string, string) (string, error)) {
+	fake.readTokenFromFileMutex.Lock()
+	defer fake.readTokenFromFileMutex.Unlock()
+	fake.readTokenFromFileStub = stub
+}
+
+func (fake *FakeAuthenticatorImplementation) ReadTokenFromFileArgsForCall(i int) (string, string) {
+	fake.readTokenFromFileMutex.RLock()
+	defer fake.readTokenFromFileMutex.RUnlock()
+	argsForCall := fake.readTokenFromFileArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeAuthenticatorImplementation) ReadTokenFromFileReturns(result1 string, result2 error) {
+	fake.readTokenFromFileMutex.Lock()
+	defer fake.readTokenFromFileMutex.Unlock()
+	fake.readTokenFromFileStub = nil
+	fake.readTokenFromFileReturns = struct {
+		result1 string
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAuthenticatorImplementation) ReadTokenFromFileReturnsOnCall(i int, result1 string, result2 error) {
+	fake.readTokenFromFileMutex.Lock()
+	defer fake.readTokenFromFileMutex.Unlock()
+	fake.readTokenFromFileStub = nil
+	if fake.readTokenFromFileReturnsOnCall == nil {
+		fake.readTokenFromFileReturnsOnCall = make(map[int]struct {
+			result1 string
+			result2 error
+		})
+	}
+	fake.readTokenFromFileReturnsOnCall[i] = struct {
 		result1 string
 		result2 error
 	}{result1, result2}

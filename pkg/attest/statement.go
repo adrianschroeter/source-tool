@@ -26,6 +26,25 @@ func NewBundleReader(reader *bufio.Reader, verifier Verifier) *BundleReader {
 }
 
 func (br *BundleReader) convertLineToStatement(line string) (*spb.Statement, error) {
+	// Check if this looks like a DSSE envelope first
+	if isDSSE(line) {
+		// Try to get the public key from the verifier options if it's a BndVerifier
+		if bndVerifier, ok := br.verifier.(*BndVerifier); ok && bndVerifier.Options.PublicKey != "" {
+			stmt, err := bndVerifier.verifyDSSE(line)
+			if err == nil {
+				Debugf("successfully verified DSSE envelope")
+				return stmt, nil
+			}
+			Debugf("DSSE verification failed: %v", err)
+			// Fall through to try sigstore verification
+		} else {
+			Debugf("line appears to be DSSE but no public key available for verification, skipping DSSE parsing")
+			// Don't fall through to sigstore verification since we know it's DSSE
+			// Return a clear error about why verification failed
+			return nil, fmt.Errorf("could not convert line to statement: '%s': DSSE envelope found but no public key configured for verification", line)
+		}
+	}
+
 	// Is this a sigstore bundle with a statement?
 	// Verify will check the signature, but nothing else.
 	vr, err := br.verifier.Verify(line)

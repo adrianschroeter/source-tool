@@ -36,7 +36,7 @@ type toolImplementation interface {
 	CreatePolicyPR(*auth.Authenticator, *options.Options, *models.Repository, *policy.RepoPolicy) (*models.PullRequest, error)
 	CheckForks(*options.Options) error
 	SearchPullRequest(context.Context, *auth.Authenticator, *models.Repository, string) (*models.PullRequest, error)
-	GetVcsBackend(*models.Repository) (models.VcsBackend, error)
+	GetVcsBackend(*models.Repository, *options.Options) (models.VcsBackend, error)
 	GetAttestationReader(*models.Repository) (models.AttestationStorageReader, error)
 	GetBranchControls(context.Context, models.VcsBackend, *models.Repository, *models.Branch) (*slsa.ControlSetStatus, error)
 	GetBranchControlsAtCommit(context.Context, models.VcsBackend, *models.Repository, *models.Branch, *models.Commit) (*slsa.ControlSetStatus, error)
@@ -73,7 +73,7 @@ func (impl *defaultToolImplementation) GetAttestationReader(_ *models.Repository
 }
 
 // GetVcsBackend returns the VCS backend to handle the repository defined in the options
-func (impl *defaultToolImplementation) GetVcsBackend(repo *models.Repository) (models.VcsBackend, error) {
+func (impl *defaultToolImplementation) GetVcsBackend(repo *models.Repository, opts *options.Options) (models.VcsBackend, error) {
 	host := repo.Hostname
 	if host == "" {
 		host = "github.com"
@@ -84,7 +84,10 @@ func (impl *defaultToolImplementation) GetVcsBackend(repo *models.Repository) (m
 		return ghbackend.New(), nil
 	}
 
-	return giteabackend.New(), nil
+	// Create Gitea backend with verifier from options
+	backend := giteabackend.New()
+	backend.Options.Verifier = opts.GetVerifier()
+	return backend, nil
 }
 
 // VerifyOptions checks options are in good shape to run

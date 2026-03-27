@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/carabiner-dev/vcslocator"
@@ -278,9 +279,19 @@ func (co *commitOptions) EnsureDefaults() error {
 type verifierOptions struct {
 	expectedIssuer string
 	expectedSan    string
+	publicKey      string
+	publicKeyFile  string
 }
 
 func (vo *verifierOptions) Validate() error {
+	// If public_key_file is provided, read and use it
+	if vo.publicKeyFile != "" && vo.publicKey == "" {
+		data, err := os.ReadFile(vo.publicKeyFile)
+		if err != nil {
+			return fmt.Errorf("reading public key file: %w", err)
+		}
+		vo.publicKey = string(data)
+	}
 	return nil
 }
 
@@ -290,6 +301,12 @@ func (vo *verifierOptions) AddFlags(cmd *cobra.Command) {
 	)
 	cmd.PersistentFlags().StringVar(
 		&vo.expectedSan, "expected_san", "", "The expected SAN string in the attestation signer certificate",
+	)
+	cmd.PersistentFlags().StringVar(
+		&vo.publicKey, "public_key", "", "Public key for DSSE verification (PEM format)",
+	)
+	cmd.PersistentFlags().StringVar(
+		&vo.publicKeyFile, "public_key_file", "", "Path to a file containing the public key for DSSE verification (PEM format)",
 	)
 }
 

@@ -26,7 +26,8 @@ func New() *Backend {
 }
 
 type Options struct {
-	UseFork bool
+	UseFork  bool
+	Verifier attest.Verifier
 }
 
 type Backend struct {
@@ -101,9 +102,11 @@ func (b *Backend) GetBranchControlsAtCommit(ctx context.Context, r *models.Repos
 
 	// Check for PROVENANCE_AVAILABLE by trying to fetch attestation notes
 	// for the specific commit that was passed in (not the latest commit)
-	attestor := attest.NewProvenanceAttestor(
-		ghc, attest.GetDefaultVerifier(),
-	)
+	verifier := b.Options.Verifier
+	if verifier == nil {
+		verifier = attest.GetDefaultVerifier()
+	}
+	attestor := attest.NewProvenanceAttestor(ghc, verifier)
 
 	// Fetch the attestation. If found, then add the control:
 	attestation, _, err := attestor.GetProvenance(ctx, commit.SHA, branch.FullRef())

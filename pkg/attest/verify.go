@@ -4,14 +4,25 @@
 package attest
 
 import (
+	"encoding/json"
+	"fmt"
+
+	sdsse "github.com/sigstore/protobuf-specs/gen/pb-go/dsse"
+
 	"github.com/carabiner-dev/signer"
+	"github.com/carabiner-dev/signer/key"
 	"github.com/carabiner-dev/signer/options"
 	"github.com/sigstore/sigstore-go/pkg/verify"
+
+	spb "github.com/in-toto/attestation/go/v1"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 type VerificationOptions struct {
 	ExpectedIssuer string
 	ExpectedSan    string
+	// PublicKey is used for DSSE verification (if provided)
+	PublicKey string
 }
 
 const (
@@ -46,8 +57,19 @@ type BndVerifier struct {
 }
 
 func (bv *BndVerifier) Verify(data string) (*verify.VerificationResult, error) {
-	// TODO: There's more for us to do here... but what?
-	// Maybe check to make sure it's from the identity we expect (the workflow?)
+	// Try to parse as DSSE first
+	if bv.Options.PublicKey != "" {
+		stmt, err := bv.verifyDSSE(data)
+		if err == nil && stmt != nil {
+			// Return a minimal verification result for DSSE
+			return &verify.VerificationResult{
+				Statement: stmt,
+			}, nil
+		}
+		// If DSSE verification fails or no public key, fall through to sigstore
+	}
+
+	// Verify the signed bundle (sigstore)
 	verifier := signer.NewVerifier()
 
 	// Verify the signed bundle
@@ -61,6 +83,107 @@ func (bv *BndVerifier) Verify(data string) (*verify.VerificationResult, error) {
 		return nil, err
 	}
 	return vr, nil
+}
+
+// verifyDSSE verifies a DSSE envelope and returns the statement
+func (bv *BndVerifier) verifyDSSE(data string) (*spb.Statement, error) {
+	// Try to parse as DSSE
+	envelope := &sdsse.Envelope{}
+	if err := protojson.Unmarshal([]byte(data), envelope); err != nil {
+		return nil, err
+	}
+
+	// Check if this looks like DSSE (has payload and payloadType fields)
+	if len(envelope.Payload) == 0 || envelope.PayloadType == "" {
+		return nil, fmt.Errorf("not a valid DSSE envelope: missing payload or payloadType")
+	}
+
+	// Parse the public key
+	publicKey, err := key.NewParser().ParsePublicKey([]byte(bv.Options.PublicKey))
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify the DSSE envelope
+	verifier := signer.NewVerifier()
+	result, err := verifier.VerifyParsedDSSE(envelope, []key.PublicKeyProvider{publicKey})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || !result.Verified {
+		return nil, fmt.Errorf("DSSE verification failed")
+	}
+
+	// The payload is already decoded by protojson (stored as []byte in the proto)
+	// Just use it directly
+	payloadBytes := envelope.Payload
+
+	// Parse as in-toto statement
+	statement := &spb.Statement{}
+	if err := protojson.Unmarshal(payloadBytes, statement); err != nil {
+		return nil, err
+	}
+
+	return statement, nil
+}
+
+type DSSEVerifier struct {
+	PublicKey string
+}
+
+// Verify verifies a DSSE envelope
+func (dv *DSSEVerifier) Verify(data string) (*spb.Statement, error) {
+	// Try to parse as DSSE
+	envelope := &sdsse.Envelope{}
+	if err := protojson.Unmarshal([]byte(data), envelope); err != nil {
+		return nil, err
+	}
+
+	// Check if this looks like DSSE (has payload and payloadType fields)
+	if len(envelope.Payload) == 0 || envelope.PayloadType == "" {
+		return nil, fmt.Errorf("not a valid DSSE envelope: missing payload or payloadType")
+	}
+
+	// Parse the public key
+	publicKey, err := key.NewParser().ParsePublicKey([]byte(dv.PublicKey))
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify the DSSE envelope
+	verifier := signer.NewVerifier()
+	result, err := verifier.VerifyParsedDSSE(envelope, []key.PublicKeyProvider{publicKey})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || !result.Verified {
+		return nil, fmt.Errorf("DSSE verification failed")
+	}
+
+	// The payload is already decoded by protojson (stored as []byte in the proto)
+	// Just use it directly
+	payloadBytes := envelope.Payload
+
+	// Parse as in-toto statement
+	statement := &spb.Statement{}
+	if err := protojson.Unmarshal(payloadBytes, statement); err != nil {
+		return nil, err
+	}
+
+	return statement, nil
+}
+
+// isDSSE checks if a string looks like a DSSE envelope
+func isDSSE(data string) bool {
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &obj); err != nil {
+		return false
+	}
+	// DSSE has payload, payloadType, and signatures fields
+	_, hasPayload := obj["payload"]
+	_, hasPayloadType := obj["payloadType"]
+	_, hasSignatures := obj["signatures"]
+	return hasPayload && hasPayloadType && hasSignatures
 }
 
 func NewBndVerifier(opts VerificationOptions) *BndVerifier {

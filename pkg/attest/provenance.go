@@ -65,6 +65,25 @@ func NewProvenanceAttestor(conn any, verifier Verifier) *ProvenanceAttestor {
 		if p, ok := conn.(vcscontrol.ControlProvider); ok {
 			pa.provider = p
 		}
+	} else {
+		// Try to check if it implements the interface via method checking
+		// This handles the case where the backend GiteaConnection is passed directly
+		type checkConnection interface {
+			GetNotesForCommit(context.Context, string) (string, error)
+			GetLatestCommit(context.Context, string) (string, error)
+			GetPriorCommit(context.Context, string) (string, error)
+			Owner() string
+			Repo() string
+			GetFullRef() string
+			GetRepoUri() string
+			BranchToFullRef(string) string
+			TagToFullRef(string) string
+		}
+
+		if c, ok := conn.(checkConnection); ok {
+			// Create a simple wrapper that uses the connection directly
+			pa.conn = &simpleConnectionWrapper{conn: c}
+		}
 	}
 
 	return pa
@@ -199,6 +218,42 @@ func (s *giteaControlStatusWrapper) GetCommitPushTime() time.Time { return s.sta
 func (s *giteaControlStatusWrapper) GetActorLogin() string        { return s.status.ActorLogin }
 func (s *giteaControlStatusWrapper) GetActivityType() string      { return "" }
 func (s *giteaControlStatusWrapper) GetControls() slsa.Controls   { return s.status.Controls }
+
+// simpleConnectionWrapper wraps a connection that implements the required methods via interface
+type simpleConnectionWrapper struct {
+	conn interface {
+		GetNotesForCommit(context.Context, string) (string, error)
+		GetLatestCommit(context.Context, string) (string, error)
+		GetPriorCommit(context.Context, string) (string, error)
+		Owner() string
+		Repo() string
+		GetFullRef() string
+		GetRepoUri() string
+		BranchToFullRef(string) string
+		TagToFullRef(string) string
+	}
+}
+
+func (g *simpleConnectionWrapper) VcsType() vcscontrol.VcsType { return vcscontrol.VcsTypeGitea }
+func (g *simpleConnectionWrapper) Owner() string               { return g.conn.Owner() }
+func (g *simpleConnectionWrapper) Repo() string                { return g.conn.Repo() }
+func (g *simpleConnectionWrapper) GetFullRef() string          { return g.conn.GetFullRef() }
+func (g *simpleConnectionWrapper) GetRepoUri() string          { return g.conn.GetRepoUri() }
+func (g *simpleConnectionWrapper) GetLatestCommit(ctx context.Context, targetBranch string) (string, error) {
+	return g.conn.GetLatestCommit(ctx, targetBranch)
+}
+func (g *simpleConnectionWrapper) GetPriorCommit(ctx context.Context, sha string) (string, error) {
+	return g.conn.GetPriorCommit(ctx, sha)
+}
+func (g *simpleConnectionWrapper) GetNotesForCommit(ctx context.Context, commit string) (string, error) {
+	return g.conn.GetNotesForCommit(ctx, commit)
+}
+func (g *simpleConnectionWrapper) BranchToFullRef(branch string) string {
+	return g.conn.BranchToFullRef(branch)
+}
+func (g *simpleConnectionWrapper) TagToFullRef(tag string) string {
+	return g.conn.TagToFullRef(tag)
+}
 
 func GetSourceProvPred(statement *spb.Statement) (*provenance.SourceProvenancePred, error) {
 	if statement == nil {
@@ -340,13 +395,11 @@ func (pa ProvenanceAttestor) createCurrentProvenance(ctx context.Context, commit
 func (pa ProvenanceAttestor) GetProvenance(ctx context.Context, commit, ref string) (*spb.Statement, *provenance.SourceProvenancePred, error) {
 	// Check if connection is nil
 	if pa.conn == nil {
-		Debugf("connection is nil, cannot get provenance for commit %s", commit)
 		return nil, nil, nil
 	}
 
 	notes, err := pa.conn.GetNotesForCommit(ctx, commit)
 	if notes == "" {
-		Debugf("didn't find notes for commit %s", commit)
 		return nil, nil, nil
 	}
 

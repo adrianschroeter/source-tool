@@ -28,6 +28,9 @@ func getVerifier(vo *verifierOptions) attest.Verifier {
 	if vo.expectedSan != "" {
 		options.ExpectedSan = vo.expectedSan
 	}
+	if vo.publicKey != "" {
+		options.PublicKey = vo.publicKey
+	}
 	return attest.NewBndVerifier(options)
 }
 
@@ -103,20 +106,20 @@ func Execute() {
 
 func CheckAuth() (*auth.Authenticator, error) {
 	authenticator := auth.New()
-	
+
 	// First try GitHub auth
 	user, err := authenticator.WhoAmI()
 	if err == nil && user != nil {
 		return authenticator, nil
 	}
-	
+
 	// If GitHub auth fails, try Gitea auth if GITEA_TOKEN is set
 	if os.Getenv("GITEA_TOKEN") != "" || tokenFileExists() {
 		// For Gitea, we just need to return an authenticator
 		// The Gitea backend will handle its own auth
 		return authenticator, nil
 	}
-	
+
 	// No auth available
 	if user == nil {
 		fmt.Println()

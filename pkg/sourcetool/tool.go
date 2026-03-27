@@ -15,6 +15,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/slsa-framework/source-tool/pkg/attest"
 	"github.com/slsa-framework/source-tool/pkg/auth"
 	"github.com/slsa-framework/source-tool/pkg/policy"
 	"github.com/slsa-framework/source-tool/pkg/slsa"
@@ -51,9 +52,14 @@ type Tool struct {
 	impl          toolImplementation
 }
 
+// GetVerifier returns the verifier based on the options
+func (t *Tool) GetVerifier() attest.Verifier {
+	return t.Options.GetVerifier()
+}
+
 // GetRepoControls returns the controls that are enabled in a repository branch.
 func (t *Tool) GetBranchControls(ctx context.Context, r *models.Repository, branch *models.Branch) (*slsa.ControlSetStatus, error) {
-	backend, err := t.impl.GetVcsBackend(r)
+	backend, err := t.impl.GetVcsBackend(r, &t.Options)
 	if err != nil {
 		return nil, fmt.Errorf("getting VCS backend: %w", err)
 	}
@@ -78,7 +84,7 @@ func (t *Tool) GetBranchControls(ctx context.Context, r *models.Repository, bran
 
 // GetBranchControlsAtCommit returns the controls that were enabled at a specific commit.
 func (t *Tool) GetBranchControlsAtCommit(ctx context.Context, r *models.Repository, branch *models.Branch, commit *models.Commit) (*slsa.ControlSetStatus, error) {
-	backend, err := t.impl.GetVcsBackend(r)
+	backend, err := t.impl.GetVcsBackend(r, &t.Options)
 	if err != nil {
 		return nil, fmt.Errorf("getting VCS backend: %w", err)
 	}
@@ -103,7 +109,7 @@ func (t *Tool) GetBranchControlsAtCommit(ctx context.Context, r *models.Reposito
 // OnboardRepository configures a repository to set up the required controls
 // to meet SLSA Source L3.
 func (t *Tool) OnboardRepository(ctx context.Context, repo *models.Repository, branches []*models.Branch) error {
-	backend, err := t.impl.GetVcsBackend(repo)
+	backend, err := t.impl.GetVcsBackend(repo, &t.Options)
 	if err != nil {
 		return fmt.Errorf("getting VCS backend: %w", err)
 	}
@@ -125,7 +131,7 @@ func (t *Tool) OnboardRepository(ctx context.Context, repo *models.Repository, b
 
 // ConfigureControls sets up a control in the repo
 func (t *Tool) ConfigureControls(ctx context.Context, repo *models.Repository, branches []*models.Branch, configs []models.ControlConfiguration) error {
-	backend, err := t.impl.GetVcsBackend(repo)
+	backend, err := t.impl.GetVcsBackend(repo, &t.Options)
 	if err != nil {
 		return fmt.Errorf("getting VCS backend: %w", err)
 	}
@@ -152,7 +158,7 @@ func (t *Tool) ConfigureControls(ctx context.Context, repo *models.Repository, b
 
 // ControlConfigurationDescr returns a description of the controls
 func (t *Tool) ControlConfigurationDescr(branch *models.Branch, config models.ControlConfiguration) string {
-	backend, err := t.impl.GetVcsBackend(branch.Repository)
+	backend, err := t.impl.GetVcsBackend(branch.Repository, &t.Options)
 	if err != nil {
 		return ""
 	}
@@ -204,7 +210,7 @@ func (t *Tool) CreateBranchPolicy(ctx context.Context, r *models.Repository, bra
 	if branches == nil {
 		return nil, errors.New("no branches defined")
 	}
-	backend, err := t.impl.GetVcsBackend(r)
+	backend, err := t.impl.GetVcsBackend(r, &t.Options)
 	if err != nil {
 		return nil, fmt.Errorf("getting backend: %w", err)
 	}
@@ -312,7 +318,7 @@ func (t *Tool) CreatePolicyRepoFork(ctx context.Context) error {
 func (t *Tool) ControlPrecheck(
 	_ context.Context, r *models.Repository, branches []*models.Branch, config models.ControlConfiguration,
 ) (ok bool, remediationMessage string, remediateFn models.ControlPreRemediationFn, err error) {
-	backend, err := t.impl.GetVcsBackend(r)
+	backend, err := t.impl.GetVcsBackend(r, &t.Options)
 	if err != nil {
 		return false, "", nil, fmt.Errorf("getting VCS backend: %w", err)
 	}

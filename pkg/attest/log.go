@@ -5,10 +5,9 @@ package attest
 
 import (
 	"fmt"
-	"log/slog"
+	"log"
 )
 
 func Debugf(format string, args ...any) {
-	//nolint:gosec // G706 This is feneral purpose logger
-	slog.Debug(fmt.Sprintf(format, args...))
+	log.Printf(fmt.Sprintf(format, args...))
 }

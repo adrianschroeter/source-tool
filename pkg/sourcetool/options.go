@@ -6,6 +6,7 @@ package sourcetool
 import (
 	"errors"
 
+	"github.com/slsa-framework/source-tool/pkg/attest"
 	"github.com/slsa-framework/source-tool/pkg/auth"
 )
 
@@ -59,6 +60,13 @@ func WithPolicyHostname(hostname string) ConfigFn {
 func WithPolicyPathOwner(owner string) ConfigFn {
 	return func(t *Tool) error {
 		t.Options.PolicyPathOwner = owner
+		return nil
+	}
+}
+
+func WithVerifierOptions(opts attest.VerificationOptions) ConfigFn {
+	return func(t *Tool) error {
+		t.Options.VerifierOptions = opts
 		return nil
 	}
 }
